@@ -54,12 +54,12 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         self.l2 = nn.LazyLinear(512)
         self.l3 = nn.LazyLinear(1)
 
-    def forward(self,x,action=torch.rand(3,2)): 
+    def forward(self,x,action): 
         x = self.conv1(x)
         x = self.conv2(x)
-        x = self.conv3(x) # 2.32.9.9
+        latent_state = self.conv3(x) # 2.32.9.9
         
-        n = torch.cat([x.flatten(1),action.T],dim=1)
+        n = torch.cat([latent_state.flatten(1),action.T],dim=1)
         n = self.l1(n)
         n = self.l2(n)
         reward = self.l3(n)
@@ -129,8 +129,26 @@ class replay_buffer:
 
 
 class main:
-    def __innit__(self):
-        pass
+    def __init_nets(self):
+        self.representation_net = representation_net()
+        self.dynamic_net = dynamic_net()
+        self.prediction_net = prediction_net()
+
+        init_state = torch.empty((2,11,9,9),device=None)
+        action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
+        
+        hidden_state = self.representation_net(init_state)
+        reward,latent_state = self.dynamic_net(hidden_state,action)
+        policy,value = self.prediction_net(latent_state)
+        
+        # TODO : Init nets and compile
+
+    def __init__(self):
+        self.env = env()
+        self.__init_nets()
+        self.mcts = mcts()
+        self.replay_buffer = replay_buffer()
+        
 
     def save(self):
         pass
@@ -138,7 +156,7 @@ class main:
     def load(self):
         pass
     
-    def log(self):
+    def log_data(self):
         pass
 
     def train(self):
