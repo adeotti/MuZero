@@ -169,6 +169,19 @@ class main:
             "optim_state":self.optim.state_dict()
         }
         torch.save(obj,"functions_states")
+
+    def load(self,path):
+        obj = torch.load(path)
+        self.representation_net.load_state_dict(obj["representation_net_state"],strict=True)
+        self.dynamic_net.load_state_dict(obj["dynamic_net_state"],strict=True)
+        self.prediction_net.load_state_dict(obj["prediction_net_state"],strict=True)
+        self.optim.load_state_dict(obj["optim_state"])
+
+    # TODO : compile
+    def l2_reg(self):
+        pass
+
+
     
     def log_data(self):
         pass
