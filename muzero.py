@@ -6,6 +6,7 @@ import numpy as np
 from gymnasium.vector import AsyncVectorEnv
 from dataclasses import dataclass
 from torch.utils.tensorboard import SummaryWriter
+from itertools import chain
 
 
 def env():
@@ -129,6 +130,9 @@ class replay_buffer:
 
 
 class main:
+    def __init_weights(self,layers):
+        pass
+
     def __init_nets(self):
         self.representation_net = representation_net()
         self.dynamic_net = dynamic_net()
@@ -141,20 +145,30 @@ class main:
         reward,latent_state = self.dynamic_net(hidden_state,action)
         policy,value = self.prediction_net(latent_state)
         
-        # TODO : Init nets and compile
+        # TODO : init weights and compile nets
 
     def __init__(self):
         self.env = env()
         self.__init_nets()
         self.mcts = mcts()
         self.replay_buffer = replay_buffer()
+        self.optim = Adam(
+                chain(
+                    self.representation_net.parameters(),
+                    self.dynamic_net.parameters(),
+                    self.prediction_net.parameters()
+                ),
+                lr=None
+        ) 
         
-
     def save(self):
-        pass
-
-    def load(self):
-        pass
+        obj = {
+            "representation_net_state":self.representation_net.state_dict(),                
+            "dynamic_net_state":self.dynamic_net.state_dict(),
+            "prediction_net_state":self.prediction_net.state_dict(),
+            "optim_state":self.optim.state_dict()
+        }
+        torch.save(obj,"functions_states")
     
     def log_data(self):
         pass
