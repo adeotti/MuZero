@@ -1,6 +1,7 @@
 import torch,sys,os,gymnasium_sudoku,mlflow
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import Adam
 import gymnasium as gym
 import numpy as np
 from gymnasium.vector import AsyncVectorEnv
@@ -15,18 +16,12 @@ def env():
         return x
     return AsyncVectorEnv([thunck for _ in range(2)])
 
+
 def process_obs(x): # -> one hot encoding + mask
     x = x.long() 
     m = (x == 0).unsqueeze(1).float()
     x = F.one_hot(x,num_classes=10).permute(0,-1,1,2).float() 
     return torch.cat([x,m],dim=1) 
-
-@torch.no_grad()
-def w_init(l):
-    if isinstance(l,(nn.Conv2d,nn.Linear)):
-        nn.init.orthogonal_(l.weight)
-        l.bias.fill_(0.0)
-
 
 class representation_net(nn.Module): # h : state -> s^0
     def __init__(self):
@@ -43,6 +38,7 @@ class representation_net(nn.Module): # h : state -> s^0
         x = self.conv3(x)
         x = self.conv4(x) # 2.32.9.9
         return x
+
 
 class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
     def __init__(self):
@@ -65,6 +61,7 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         n = self.l2(n)
         reward = self.l3(n)
         return reward,latent_state
+
 
 class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     def __init__(self):
@@ -97,6 +94,25 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         value = -1e8
         return torch.masked_fill(x,mask,value)
 
+
+class l2_reg(nn.Module): # L2 Regularization
+    def __init__(self,n1,n2,n3):
+        super().__init__()
+        self.n1 = n1
+        self.n2 = n2
+        self.n3 = n3
+        self.weights = self.get_weights(self.n1,self.n2,self.n3)
+    
+    def get_weights(self,n1,n2,n3):
+        chnd_params = chain(n1.parameters(),n2.parameters(),n3.parameters())
+        weights = [params for params in chnd_params if params.ndim>1]
+        return weights
+
+    def forward(self,x=0.0):
+        for n in self.weights:
+            x += n.square().sum()
+        return x
+    
 
 class mcts:
     def __innit__(self):
@@ -152,14 +168,21 @@ class main:
         self.__init_nets()
         self.mcts = mcts()
         self.replay_buffer = replay_buffer()
+
         self.optim = Adam(
                 chain(
                     self.representation_net.parameters(),
                     self.dynamic_net.parameters(),
                     self.prediction_net.parameters()
                 ),
-                lr=None
-        ) 
+                lr=0.0 # TODO : update lr
+        )
+
+        self.l2 = l2_reg(self.representation_net,
+                         self.dynamic_net,
+                         self.prediction_net
+        )
+        # TODO : compile l2
         
     def save(self):
         obj = {
@@ -177,15 +200,11 @@ class main:
         self.prediction_net.load_state_dict(obj["prediction_net_state"],strict=True)
         self.optim.load_state_dict(obj["optim_state"])
 
-    # TODO : compile
-    def l2_reg(self):
-        pass
-
-
-    
     def log_data(self):
         pass
 
     def train(self):
         pass
+        
+        
      
