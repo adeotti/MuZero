@@ -95,24 +95,29 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         return torch.masked_fill(x,mask,value)
 
 
-class l2_reg(nn.Module): # L2 Regularization
-    def __init__(self,n1,n2,n3):
-        super().__init__()
-        self.n1 = n1
-        self.n2 = n2
-        self.n3 = n3
-        self.weights = self.get_weights(self.n1,self.n2,self.n3)
+class l2_reg(): # L2 Regularization
+    def __init__(self,*networks): 
+        self.weights = self.get_weights(networks)
+
+    def __call__(self):
+        return self.forward()
     
-    def get_weights(self,n1,n2,n3):
-        chnd_params = chain(n1.parameters(),n2.parameters(),n3.parameters())
+    def get_weights(self,networks):
+        chnd_params = chain(*[net.parameters() for net in networks])
         weights = [params for params in chnd_params if params.ndim>1]
         return weights
 
-    def forward(self,x=0.0):
+    def forward(self):
+        l2 = 0.0
         for n in self.weights:
-            x += n.square().sum()
-        return x
-    
+            l2 += n.square().sum()
+        return 0.1*l2 # hypers.l2_coeff*l2 
+ 
+
+class node:
+    def __init__(self,root):
+        self.root = root
+        self.children = None
 
 class mcts:
     def __innit__(self):
@@ -182,7 +187,6 @@ class main:
                          self.dynamic_net,
                          self.prediction_net
         )
-        # TODO : compile l2
         
     def save(self):
         obj = {
@@ -204,7 +208,9 @@ class main:
         pass
 
     def train(self):
-        pass
+      pass 
         
         
-     
+
+if __name__ == "__main__":
+    main().train()
