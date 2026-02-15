@@ -111,13 +111,14 @@ class l2_reg(): # L2 Regularization
         l2 = 0.0
         for n in self.weights:
             l2 += n.square().sum()
-        return 0.1*l2 # hypers.l2_coeff*l2 
+        return 0.1*l2 # hypers.l2_coeff*l2
  
 
 class node:
     def __init__(self,root):
         self.root = root
         self.children = None
+        self.visit_count = None
 
 class mcts:
     def __innit__(self):
@@ -140,10 +141,22 @@ class mcts:
 
 
 class replay_buffer:
+    def init_buffer(self):
+        self.curr_obs = torch.empty()
+        self.nx_obs = torch.empty()
+        self.true_reward = torch.empty()
+        self.pred_reward = torch.empty()
+        self.actions = torch.empty()
+
     def __init__(self):
         pass
-
-    def store(self):
+    
+    @torch.no_grad()
+    def step(self):
+        # one mcts steps 
+        # sample distribution after the mcts step
+        # step env with action sampled from the mcts distribution
+        # store data (obs,reward) to buffer 
         pass
 
     def sample(self):
@@ -194,7 +207,7 @@ class main:
             "dynamic_net_state":self.dynamic_net.state_dict(),
             "prediction_net_state":self.prediction_net.state_dict(),
             "optim_state":self.optim.state_dict()
-        }
+        }\
         torch.save(obj,"functions_states")
 
     def load(self,path):
@@ -205,6 +218,9 @@ class main:
         self.optim.load_state_dict(obj["optim_state"])
 
     def log_data(self):
+        pass
+
+    def n_step_return(self): # value target
         pass
 
     def train(self):
