@@ -1,6 +1,7 @@
 import torch,sys,os,gymnasium_sudoku,mlflow
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Categorical
 from torch.optim import Adam
 import gymnasium as gym
 import numpy as np
@@ -18,7 +19,7 @@ def env():
 
 
 def process_obs(x): # -> one hot encoding + mask
-    x = x.long() 
+    x = torch.as_tensor(x).long() 
     m = (x == 0).unsqueeze(1).float()
     x = F.one_hot(x,num_classes=10).permute(0,-1,1,2).float() 
     return torch.cat([x,m],dim=1) 
@@ -111,53 +112,51 @@ class l2_reg(): # L2 Regularization
         l2 = 0.0
         for n in self.weights:
             l2 += n.square().sum()
-        return 0.1*l2 # hypers.l2_coeff*l2
+        return 0.1*l2 # TODO Update coefficient
  
 
 class node:
-    def __init__(self,root):
-        self.root = root
+    def __init__(self,state,policy,value):
+        self.state = state
+        self.policy = policy
+        self.value = value
+        self.reward = None
         self.children = None
-        self.visit_count = None
 
 class mcts:
-    def __innit__(self):
-        pass
+    def __init__(self,*networks):
+        self.rep_net,self.dyn_net,self.pred_net = networks
 
-    def ucb(self):
-        pass
-
-    def selection(self):
-        pass
-
-    def expansion(self):
-        pass
-
-    def simulation(self):
-        pass
-
-    def backup(self):
-        pass
-
+    def search(self,observation,num_sim=1):
+        hidden_state = self.rep_net(observation)
+        policy,value = self.pred_net(hidden_state)
+    
+        root = node(hidden_state,policy,value)
+        action = Categorical(probs=policy).sample()
+        root.action = action
 
 class replay_buffer:
     def init_buffer(self):
-        self.curr_obs = torch.empty()
-        self.nx_obs = torch.empty()
-        self.true_reward = torch.empty()
-        self.pred_reward = torch.empty()
-        self.actions = torch.empty()
+        self.curr_obs = torch.empty(0,device=None)
+        self.nx_obs = torch.empty(0,device=None)
+        self.true_reward = torch.empty(0,device=None)
+        self.pred_reward = torch.empty(0,device=None)
+        self.actions = torch.empty(0,device=None)
 
-    def __init__(self):
-        pass
+    def __init__(self,env,mcts):
+        self.mcts = mcts
+        self.env = env
+        self.obs = self.env.reset()[0]
+        self.init_buffer()
     
-    @torch.no_grad()
     def step(self):
-        # one mcts steps 
-        # sample distribution after the mcts step
-        # step env with action sampled from the mcts distribution
-        # store data (obs,reward) to buffer 
-        pass
+        with torch.no_grad():
+            self.mcts.search(process_obs(self.obs))
+            # one mcts steps 
+            # sample distribution after the mcts step
+            # step env with action sampled from the mcts distribution
+            # store data (obs,reward) to buffer 
+            pass
 
     def sample(self):
         pass
@@ -171,22 +170,21 @@ class main:
         self.representation_net = representation_net()
         self.dynamic_net = dynamic_net()
         self.prediction_net = prediction_net()
-
+        """
         init_state = torch.empty((2,11,9,9),device=None)
         action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action)
         policy,value = self.prediction_net(latent_state)
-        
+    
         # TODO : init weights and compile nets
+        """
 
     def __init__(self):
         self.env = env()
-        self.__init_nets()
-        self.mcts = mcts()
-        self.replay_buffer = replay_buffer()
 
+        self.__init_nets()
         self.optim = Adam(
                 chain(
                     self.representation_net.parameters(),
@@ -195,6 +193,9 @@ class main:
                 ),
                 lr=0.0 # TODO : update lr
         )
+
+        self.mcts = mcts(self.representation_net,self.dynamic_net,self.prediction_net)
+        self.replay_buffer = replay_buffer(self.env,self.mcts)
 
         self.l2 = l2_reg(self.representation_net,
                          self.dynamic_net,
@@ -207,7 +208,7 @@ class main:
             "dynamic_net_state":self.dynamic_net.state_dict(),
             "prediction_net_state":self.prediction_net.state_dict(),
             "optim_state":self.optim.state_dict()
-        }\
+        }
         torch.save(obj,"functions_states")
 
     def load(self,path):
@@ -220,13 +221,16 @@ class main:
     def log_data(self):
         pass
 
-    def n_step_return(self): # value target
-        pass
+    def n_step_return(self,x): # value target
+        pow_ = torch.arange(0,x.size(-1))
+        return torch.pow(x,pow_).sum(-1)
+    
+    def run(self,start=False):
+        if start:
+            self.replay_buffer.step()
+            
+        
 
-    def train(self):
-      pass 
-        
-        
 
 if __name__ == "__main__":
-    main().train()
+    main().run(start=True)
