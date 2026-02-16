@@ -95,6 +95,16 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         value = -1e8
         return torch.masked_fill(x,mask,value)
 
+class mrv:
+    def __init__(self,state):
+        pass
+    
+    def get_domains(self,state):
+        pass
+
+    def sample_cell(self):
+        pass
+
 
 class l2_reg(): # L2 Regularization
     def __init__(self,*networks): 
@@ -121,7 +131,7 @@ class node:
         self.policy = policy
         self.value = value
         self.reward = None
-        self.children = None
+        self.children = {}
 
 class mcts:
     def __init__(self,*networks):
@@ -134,6 +144,8 @@ class mcts:
         root = node(hidden_state,policy,value)
         action = Categorical(probs=policy).sample()
         root.action = action
+
+
 
 class replay_buffer:
     def init_buffer(self):
