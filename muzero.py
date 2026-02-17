@@ -24,6 +24,11 @@ def process_obs(x): # -> one hot encoding + mask
     x = F.one_hot(x,num_classes=10).permute(0,-1,1,2).float() 
     return torch.cat([x,m],dim=1) 
 
+
+def init_weights(layers):
+    pass
+
+
 class representation_net(nn.Module): # h : state -> s^0
     def __init__(self):
         super().__init__()
@@ -95,35 +100,17 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         value = -1e8
         return torch.masked_fill(x,mask,value)
 
-class mrv:
+class mrv: # Cell sampling with Minimum Remaining value
     def __init__(self,state):
-        pass
-    
+        self.state = torch.as_tensor(state[0]).unsqueeze(1).expand(9,9,9)
+        self.target = torch.arange(1,10).repeat(81).reshape(9,9,9)
+            
     def get_domains(self,state):
         pass
 
     def sample_cell(self):
         pass
 
-
-class l2_reg(): # L2 Regularization
-    def __init__(self,*networks): 
-        self.weights = self.get_weights(networks)
-
-    def __call__(self):
-        return self.forward()
-    
-    def get_weights(self,networks):
-        chnd_params = chain(*[net.parameters() for net in networks])
-        weights = [params for params in chnd_params if params.ndim>1]
-        return weights
-
-    def forward(self):
-        l2 = 0.0
-        for n in self.weights:
-            l2 += n.square().sum()
-        return 0.1*l2 # TODO Update coefficient
- 
 
 class node:
     def __init__(self,state,policy,value):
@@ -144,7 +131,6 @@ class mcts:
         root = node(hidden_state,policy,value)
         action = Categorical(probs=policy).sample()
         root.action = action
-
 
 
 class replay_buffer:
@@ -174,15 +160,37 @@ class replay_buffer:
         pass
 
 
-class main:
-    def __init_weights(self,layers):
-        pass
+class l2_regularization():
+    def __init__(self,*networks): 
+        self.weights = self.get_weights(networks)
 
+    def __call__(self):
+        return self.forward()
+    
+    def get_weights(self,networks):
+        chnd_params = chain(*[net.parameters() for net in networks])
+        weights = [params for params in chnd_params if params.ndim>1]
+        return weights
+
+    def forward(self):
+        l2 = 0.0
+        for n in self.weights:
+            l2 += n.square().sum()
+        return 0.1*l2 # TODO Update coefficient
+
+
+def n_step_return(x): # value target
+    pow_ = torch.arange(0,x.size(-1))
+    n = torch.pow(x,pow_).sum(-1) 
+    return n
+
+
+class main:
     def __init_nets(self):
         self.representation_net = representation_net()
         self.dynamic_net = dynamic_net()
         self.prediction_net = prediction_net()
-        """
+
         init_state = torch.empty((2,11,9,9),device=None)
         action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
         
@@ -191,7 +199,6 @@ class main:
         policy,value = self.prediction_net(latent_state)
     
         # TODO : init weights and compile nets
-        """
 
     def __init__(self):
         self.env = env()
@@ -209,7 +216,7 @@ class main:
         self.mcts = mcts(self.representation_net,self.dynamic_net,self.prediction_net)
         self.replay_buffer = replay_buffer(self.env,self.mcts)
 
-        self.l2 = l2_reg(self.representation_net,
+        self.l2 = l2_regularization(self.representation_net,
                          self.dynamic_net,
                          self.prediction_net
         )
@@ -232,17 +239,13 @@ class main:
 
     def log_data(self):
         pass
-
-    def n_step_return(self,x): # value target
-        pow_ = torch.arange(0,x.size(-1))
-        return torch.pow(x,pow_).sum(-1)
     
     def run(self,start=False):
         if start:
-            self.replay_buffer.step()
-            
+            #self.replay_buffer.step()
+            pass
         
 
-
 if __name__ == "__main__":
-    main().run(start=True)
+    #main().run(start=True)
+    #mrv(env().reset()[0])
