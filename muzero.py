@@ -1,4 +1,4 @@
-import torch,sys,os,gymnasium_sudoku,mlflow
+import torch,sys,os,gymnasium_sudoku,mlflow,random
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
@@ -58,6 +58,7 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         self.l3 = nn.LazyLinear(1)
 
     def forward(self,x,action): 
+        # acttion shape [2,3]
         x = self.conv1(x)
         x = self.conv2(x)
         latent_state = self.conv3(x) # 2.32.9.9
@@ -102,36 +103,55 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
 
 class mrv: # Cell sampling with Minimum Remaining value
     def __init__(self,state):
-        self.state = torch.as_tensor(state[0]).unsqueeze(1).expand(9,9,9)
-        self.target = torch.arange(1,10).repeat(81).reshape(9,9,9)
-            
+        #self.state = torch.as_tensor(state[0]).unsqueeze(1).expand(9,9,9)
+        #self.target = torch.arange(1,10).repeat(81).reshape(9,9,9)
+        pass
+
     def get_domains(self,state):
         pass
 
     def sample_cell(self):
-        pass
+        return torch.randint(0,9,(2,2))
 
 
 class node:
-    def __init__(self,state,policy,value):
-        self.state = state
-        self.policy = policy
-        self.value = value
-        self.reward = None
+    def __init__(self):
+        self.visit_count = 0.0   # N(s,a)
+        self.mean_value = 0.0    # Q(s,a)
+        self.policy = 0.0        # P(s,a)
+        self.reward = 0.0        # R(s,a)
+        self.state = 0.0         # S(s,a)
         self.children = {}
 
 class mcts:
-    def __init__(self,*networks):
+    def __init__(self,networks:list,mrv):
         self.rep_net,self.dyn_net,self.pred_net = networks
+        self.mrv = mrv
+
+    def cat_action(self,cells,cells_values):
+        return torch.cat([cells,cells_values],-1).T
 
     def search(self,observation,num_sim=1):
+        cell = self.mrv.sample_cell()
+
         hidden_state = self.rep_net(observation)
         policy,value = self.pred_net(hidden_state)
-    
-        root = node(hidden_state,policy,value)
-        action = Categorical(probs=policy).sample()
-        root.action = action
+        cell_value = Categorical(probs=policy).sample().unsqueeze(-1)
+        action = self.cat_action(cell,cell_value)
 
+        root = node()
+    
+        for n in range(num_sim):
+            #reward,latent_state = self.dyn_net(hidden_state,action)
+            #c_policy,c_value = self.pred_net(latent_state)
+            #child = node()
+            #c_action = c_policy 
+            #child.action = c_action
+            pass
+
+    def ucb(self,node):
+        pass
+        
 
 class replay_buffer:
     def init_buffer(self):
@@ -190,20 +210,21 @@ class main:
         self.representation_net = representation_net()
         self.dynamic_net = dynamic_net()
         self.prediction_net = prediction_net()
-
+        """
         init_state = torch.empty((2,11,9,9),device=None)
         action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action)
         policy,value = self.prediction_net(latent_state)
-    
+        """
         # TODO : init weights and compile nets
 
     def __init__(self):
         self.env = env()
 
         self.__init_nets()
+        """
         self.optim = Adam(
                 chain(
                     self.representation_net.parameters(),
@@ -212,15 +233,19 @@ class main:
                 ),
                 lr=0.0 # TODO : update lr
         )
-
-        self.mcts = mcts(self.representation_net,self.dynamic_net,self.prediction_net)
+        """
+        self.mrv = mrv(self.env.reset()[0])
+        self.mcts = mcts(
+                (self.representation_net,self.dynamic_net,self.prediction_net),
+                self.mrv
+        )
         self.replay_buffer = replay_buffer(self.env,self.mcts)
-
+        """
         self.l2 = l2_regularization(self.representation_net,
                          self.dynamic_net,
                          self.prediction_net
         )
-        
+        """
     def save(self):
         obj = {
             "representation_net_state":self.representation_net.state_dict(),                
@@ -242,10 +267,10 @@ class main:
     
     def run(self,start=False):
         if start:
-            #self.replay_buffer.step()
-            pass
+            self.replay_buffer.step()
+            #pass
         
 
 if __name__ == "__main__":
-    #main().run(start=True)
+    main().run(start=True)
     #mrv(env().reset()[0])
