@@ -6,7 +6,6 @@ from torch.distributions import Dirichlet
 from torch.optim import Adam
 import gymnasium as gym
 import numpy as np
-from gymnasium.vector import AsyncVectorEnv
 from dataclasses import dataclass
 from torch.utils.tensorboard import SummaryWriter
 from itertools import chain
@@ -18,9 +17,9 @@ def env():
 
 def process_obs(x): # -> one hot encoding + mask
     x = torch.as_tensor(x).long() 
-    m = (x == 0).unsqueeze(1).float()
-    x = F.one_hot(x,num_classes=10).permute(0,-1,1,2).float() 
-    return torch.cat([x,m],dim=1) 
+    m = (x == 0).unsqueeze(0).float()
+    x = F.one_hot(x,num_classes=10).permute(-1,0,1).float()
+    return torch.cat([x,m],dim=0).unsqueeze(0) 
 
 
 def init_weights(layers):
@@ -56,7 +55,7 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         self.l3 = nn.LazyLinear(1)
 
     def forward(self,x,action): 
-        # acttion shape [2,3]
+        # action shape [2,3]
         x = self.conv1(x)
         x = self.conv2(x)
         latent_state = self.conv3(x) # 2.32.9.9
@@ -77,7 +76,7 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         
         self.l1 = nn.LazyLinear(1024)
         self.l2 = nn.LazyLinear(512)
-        self.policy = nn.LazyLinear(10)
+        self.policy = nn.LazyLinear(10*9)
         self.value = nn.LazyLinear(1)
 
     def forward(self,latent_state):
@@ -87,7 +86,7 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         x = self.l1(x.flatten(1))
         x = self.l2(x)
         
-        policy = self.policy(self.action_mask(x))
+        policy = self.action_mask(self.policy(x).reshape(1,9,10))
         policy = F.softmax(policy,-1)
 
         value = self.value(x)
@@ -95,9 +94,10 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     
     def action_mask(self,x): # min(cell value) = 1 
         mask = torch.zeros_like(x,dtype=torch.bool)   
-        mask[:,0] = True
-        value = -1e8
+        mask[...,0] = True
+        value = -float("inf")
         return torch.masked_fill(x,mask,value)
+
 
 class mrv: # Cell sampling with Minimum Remaining value
     def __init__(self,state):
@@ -146,6 +146,7 @@ class mcts:
 
         hidden_state = self.rep_net(observation)
         policy,value = self.pred_net(hidden_state)
+        
         cell_value = Categorical(probs=policy).sample().unsqueeze(-1)
         action = self.cat_action(target_cell,cell_value)
 
