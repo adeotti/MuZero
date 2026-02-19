@@ -2,6 +2,7 @@ import torch,sys,os,gymnasium_sudoku,mlflow,random
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+from torch.distributions import Dirichlet
 from torch.optim import Adam
 import gymnasium as gym
 import numpy as np
@@ -115,13 +116,25 @@ class mrv: # Cell sampling with Minimum Remaining value
 
 
 class node:
-    def __init__(self):
+    def __init__(self,edge_prob):
+        self.prior = edge_prob
         self.visit_count = 0.0   # N(s,a)
         self.mean_value = 0.0    # Q(s,a)
         self.policy = 0.0        # P(s,a)
         self.reward = 0.0        # R(s,a)
-        self.state = 0.0         # S(s,a)
+        self.state = None       # S(s,a)
         self.children = {}
+
+    def is_expanded(self):
+        return len(self.children) > 0
+    
+    def expand(self,state,reward):
+        self.state = state
+        self.reward = reward
+
+    def dirichlet_noise(self):
+        pass
+
 
 class mcts:
     def __init__(self,networks:list,mrv):
@@ -132,22 +145,23 @@ class mcts:
         return torch.cat([cells,cells_values],-1).T
 
     def search(self,observation,num_sim=1):
-        cell = self.mrv.sample_cell()
+        target_cell = self.mrv.sample_cell()
 
         hidden_state = self.rep_net(observation)
         policy,value = self.pred_net(hidden_state)
         cell_value = Categorical(probs=policy).sample().unsqueeze(-1)
-        action = self.cat_action(cell,cell_value)
+        action = self.cat_action(target_cell,cell_value)
 
-        root = node()
+        root = node(0)
+        print(root.is_expanded())
     
-        for n in range(num_sim):
+        #for n in range(num_sim):
             #reward,latent_state = self.dyn_net(hidden_state,action)
             #c_policy,c_value = self.pred_net(latent_state)
             #child = node()
             #c_action = c_policy 
             #child.action = c_action
-            pass
+            
 
     def ucb(self,node):
         pass
