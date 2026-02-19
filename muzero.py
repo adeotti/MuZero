@@ -13,11 +13,8 @@ from itertools import chain
 
 
 def env():
-    def thunck():
-        x = gym.make("sudoku-v1",mode="easy",horizon=400)
-        return x
-    return AsyncVectorEnv([thunck for _ in range(2)])
-
+    x = gym.make("sudoku-v1",mode="easy",horizon=400)
+    return x
 
 def process_obs(x): # -> one hot encoding + mask
     x = torch.as_tensor(x).long() 
@@ -122,7 +119,7 @@ class node:
         self.mean_value = 0.0    # Q(s,a)
         self.policy = 0.0        # P(s,a)
         self.reward = 0.0        # R(s,a)
-        self.state = None       # S(s,a)
+        self.state = None        # S(s,a)
         self.children = {}
 
     def is_expanded(self):
@@ -132,7 +129,7 @@ class node:
         self.state = state
         self.reward = reward
 
-    def dirichlet_noise(self):
+    def add_dirichlet_noise(self):
         pass
 
 
@@ -153,14 +150,20 @@ class mcts:
         action = self.cat_action(target_cell,cell_value)
 
         root = node(0)
-        print(root.is_expanded())
-    
+        depth = 0
+        if not root.is_expanded():
+            pass
+            
+
+        #root.expand()
+        #root.add_dirichlet_noise()
+        #print(root.is_expanded())
         #for n in range(num_sim):
-            #reward,latent_state = self.dyn_net(hidden_state,action)
-            #c_policy,c_value = self.pred_net(latent_state)
-            #child = node()
-            #c_action = c_policy 
-            #child.action = c_action
+        #reward,latent_state = self.dyn_net(hidden_state,action)
+        #c_policy,c_value = self.pred_net(latent_state)
+        #child = node()
+        #c_action = c_policy 
+        #child.action = c_action
             
 
     def ucb(self,node):
