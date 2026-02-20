@@ -1,4 +1,4 @@
-import torch,sys,os,gymnasium_sudoku,mlflow,random
+import torch,sys,os,gymnasium_sudoku,mlflow,random,math
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
@@ -120,10 +120,10 @@ class node:
         self.policy = 0.0        # P(s,a)
         self.reward = 0.0        # R(s,a)
         self.state = None       # S(s,a)
-        self.children = {}
+        self.childs = {}
 
     def is_expanded(self):
-        return len(self.children) > 0
+        return len(self.childs) > 0
     
     def expand(self,state,reward):
         self.state = state
@@ -138,8 +138,8 @@ class mcts:
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.mrv = mrv
 
-    def cat_action(self,cells,cells_values):
-        return torch.cat([cells,cells_values],-1).T
+    def cat_action(self,cell,value):
+        return torch.cat([cell,value])
 
     def search(self,observation,num_sim=1):
         target_cell = self.mrv.sample_cell()
@@ -157,12 +157,22 @@ class mcts:
             for n,p in enumerate(policy.squeeze()):
                 prior = (1 - epsilon) * p.item() + epsilon * noise[n].item()
                 # p'(a) = (1-epsilon) * p'(a) + (epsilon * noise)
-                root.children[n+1] = node(prior)
-            
-            depth+=1
-            
-    def ucb(self,node):
-        pass
+                root.childs[n+1] = node(round(prior,4))
+        
+        a = self.ucb(root)
+    
+    def ucb(self,parent):
+        scores = {}
+        c1 = 0.2 ; c2 = 0.6
+        for action,child in parent.childs.items():
+            x = (child.mean_value + child.prior)
+            x *= (math.sqrt(parent.visit_count)) / (1 + child.visit_count)
+            x *= c1 + math.log((parent.visit_count + c2 + 1) / c2)  
+            scores[action] = child.mean_value + x
+        a = max(scores,key=scores.get)
+        return a
+        
+        
         
 
 class replay_buffer:
