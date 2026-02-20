@@ -129,9 +129,6 @@ class node:
         self.state = state
         self.reward = reward
 
-    def add_dirichlet_noise(self):
-        pass
-
 
 class mcts:
     def __init__(self,networks:list,mrv):
@@ -151,15 +148,16 @@ class mcts:
         depth = 0
     
         if not root.is_expanded(): # expand root + dirichlet noise on priors
-            epsilon = 0.25
-            alpha = torch.full((9,),0.3)
+            epsilon = 0.25 ; alpha = torch.full((9,),0.3)
             noise = Dirichlet(alpha).sample()
             for n,p in enumerate(policy.squeeze()):
                 prior = (1 - epsilon) * p.item() + epsilon * noise[n].item()
                 # p'(a) = (1-epsilon) * p'(a) + (epsilon * noise)
                 root.childs[n+1] = node(round(prior,4))
+            depth += 1 
         
         a = self.ucb(root)
+        # expande node[a]
     
     def ucb(self,parent):
         scores = {}
@@ -171,8 +169,6 @@ class mcts:
             scores[action] = child.mean_value + x
         a = max(scores,key=scores.get)
         return a
-        
-        
         
 
 class replay_buffer:
