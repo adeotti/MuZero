@@ -76,7 +76,7 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         
         self.l1 = nn.LazyLinear(1024)
         self.l2 = nn.LazyLinear(512)
-        self.policy = nn.LazyLinear(10*9)
+        self.policy = nn.LazyLinear(9)
         self.value = nn.LazyLinear(1)
 
     def forward(self,latent_state):
@@ -86,13 +86,13 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         x = self.l1(x.flatten(1))
         x = self.l2(x)
         
-        policy = self.action_mask(self.policy(x).reshape(1,9,10))
+        policy = self.policy(x)
         policy = F.softmax(policy,-1)
 
         value = self.value(x)
         return policy,value
     
-    def action_mask(self,x): # min(cell value) = 1 
+    def action_mask(self,x): 
         mask = torch.zeros_like(x,dtype=torch.bool)   
         mask[...,0] = True
         value = -float("inf")
@@ -113,13 +113,13 @@ class mrv: # Cell sampling with Minimum Remaining value
 
 
 class node:
-    def __init__(self,edge_prob):
-        self.prior = edge_prob
+    def __init__(self,prior):
+        self.prior = prior
         self.visit_count = 0.0   # N(s,a)
         self.mean_value = 0.0    # Q(s,a)
         self.policy = 0.0        # P(s,a)
         self.reward = 0.0        # R(s,a)
-        self.state = None        # S(s,a)
+        self.state = None       # S(s,a)
         self.children = {}
 
     def is_expanded(self):
@@ -147,26 +147,20 @@ class mcts:
         hidden_state = self.rep_net(observation)
         policy,value = self.pred_net(hidden_state)
         
-        cell_value = Categorical(probs=policy).sample().unsqueeze(-1)
-        action = self.cat_action(target_cell,cell_value)
-
-        root = node(0)
+        root = node(0) ; root.state = hidden_state
         depth = 0
-        if not root.is_expanded():
-            pass
+    
+        if not root.is_expanded(): # expand root + dirichlet noise on priors
+            epsilon = 0.25
+            alpha = torch.full((9,),0.3)
+            noise = Dirichlet(alpha).sample()
+            for n,p in enumerate(policy.squeeze()):
+                prior = (1 - epsilon) * p.item() + epsilon * noise[n].item()
+                # p'(a) = (1-epsilon) * p'(a) + (epsilon * noise)
+                root.children[n+1] = node(prior)
             
-
-        #root.expand()
-        #root.add_dirichlet_noise()
-        #print(root.is_expanded())
-        #for n in range(num_sim):
-        #reward,latent_state = self.dyn_net(hidden_state,action)
-        #c_policy,c_value = self.pred_net(latent_state)
-        #child = node()
-        #c_action = c_policy 
-        #child.action = c_action
+            depth+=1
             
-
     def ucb(self,node):
         pass
         
@@ -188,10 +182,6 @@ class replay_buffer:
     def step(self):
         with torch.no_grad():
             self.mcts.search(process_obs(self.obs))
-            # one mcts steps 
-            # sample distribution after the mcts step
-            # step env with action sampled from the mcts distribution
-            # store data (obs,reward) to buffer 
             pass
 
     def sample(self):
