@@ -148,15 +148,26 @@ class mcts:
                 root.childs[n+1] = node(round(prior,4))
             depth += 1 
         
-        a = self.ucb(root)
+        for _ in range(10):
+            path = [root]
+            current = root
+            while current.is_expanded():
+                a = self.ucb(current)
+                current = current.childs[a]
+                path.append(current)
+        
+        parent = search_path[-2]
         action = self.cat_action(target_cell,torch.tensor([a]))
-        reward_n,state_n = self.dyn_net(root.state,action)
+        reward_n,state_n = self.dyn_net(parent.state,action)
         policy_n,value_n = self.pred_net(state_n)
-        n_node = node(root.childs[a].prior)
-        n_node.state = state_n ; n_node.reward = reward_n ; n_node.visit_count = 1
+    
+        current.state = state_n
+        current.reward = reward_n
         for n, p in enumerate(policy_n.squeeze()):
-            n_node.childs[n+1] = node(p.item())
+            current.childs[n+1] = node(p.item())        
         depth += 1
+
+        # TODO backpropagation
     
     def ucb(self,parent):
         scores = {}
