@@ -91,12 +91,6 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         value = self.value(x)
         return policy,value
     
-    def action_mask(self,x): 
-        mask = torch.zeros_like(x,dtype=torch.bool)   
-        mask[...,0] = True
-        value = -float("inf")
-        return torch.masked_fill(x,mask,value)
-
 
 class mrv: # Cell sampling with Minimum Remaining value
     def __init__(self,state):
