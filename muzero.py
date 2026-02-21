@@ -137,6 +137,7 @@ class mcts:
         
         root = node(0) ; root.state = hidden_state
         depth = 0
+        # TODO : track path for backpropagation
     
         if not root.is_expanded(): # expand root + dirichlet noise on priors
             epsilon = 0.25 ; alpha = torch.full((9,),0.3)
@@ -153,7 +154,9 @@ class mcts:
         policy_n,value_n = self.pred_net(state_n)
         n_node = node(root.childs[a].prior)
         n_node.state = state_n ; n_node.reward = reward_n ; n_node.visit_count = 1
-        depht += 1
+        for n, p in enumerate(policy_n.squeeze()):
+            n_node.childs[n+1] = node(p.item())
+        depth += 1
     
     def ucb(self,parent):
         scores = {}
