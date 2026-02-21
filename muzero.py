@@ -49,7 +49,6 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         self.conv1 = nn.LazyConv2d(32,3,1,1) # 256
         self.conv2 = nn.LazyConv2d(32,3,1,1) # 256
         self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
-
         self.l1 = nn.LazyLinear(1024)
         self.l2 = nn.LazyLinear(512)
         self.l3 = nn.LazyLinear(1)
@@ -58,7 +57,6 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         x = self.conv1(x)
         x = self.conv2(x)
         latent_state = self.conv3(x) # 2.32.9.9
-        
         n = torch.cat([latent_state.flatten(1),action.unsqueeze(0)],dim=1)
         n = self.l1(n)
         n = self.l2(n)
@@ -72,7 +70,6 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         self.conv1 = nn.LazyConv2d(32,3,1,1)
         self.conv2 = nn.LazyConv2d(32,3,1,1)
         self.conv3 = nn.LazyConv2d(32,3,1,1)
-        
         self.l1 = nn.LazyLinear(1024)
         self.l2 = nn.LazyLinear(512)
         self.policy = nn.LazyLinear(9)
@@ -83,11 +80,9 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         x = self.conv2(x)
         x = self.conv3(x)
         x = self.l1(x.flatten(1))
-        x = self.l2(x)
-        
+        x = self.l2(x) 
         policy = self.policy(x)
         policy = F.softmax(policy,-1)
-
         value = self.value(x)
         return policy,value
     
@@ -107,10 +102,9 @@ class mrv: # Cell sampling with Minimum Remaining value
 
 class node:
     def __init__(self,prior):
-        self.prior = prior
+        self.prior = prior       # P(s,a)
         self.visit_count = 0.0   # N(s,a)
-        self.mean_value = 0.0    # Q(s,a)
-        self.policy = 0.0        # P(s,a)
+        self.mean_value = 0.0    # Q(s,a)     
         self.reward = 0.0        # R(s,a)
         self.state = None        # S(s,a)
         self.childs = {}
@@ -143,7 +137,7 @@ class mcts:
             epsilon = 0.25 ; alpha = torch.full((9,),0.3)
             noise = Dirichlet(alpha).sample()
             for n,p in enumerate(policy.squeeze()):
-                prior = (1 - epsilon) * p.item() + epsilon * noise[n].item()
+                prior = (1 - epsilon) * p.item() + epsilon * noise[n].item() 
                 # p'(a) = (1-epsilon) * p'(a) + (epsilon * noise)
                 root.childs[n+1] = node(round(prior,4))
             depth += 1 
@@ -156,7 +150,7 @@ class mcts:
                 current = current.childs[a]
                 path.append(current)
         
-        parent = search_path[-2]
+        parent = path[-2]
         action = self.cat_action(target_cell,torch.tensor([a]))
         reward_n,state_n = self.dyn_net(parent.state,action)
         policy_n,value_n = self.pred_net(state_n)
@@ -167,11 +161,15 @@ class mcts:
             current.childs[n+1] = node(p.item())        
         depth += 1
 
-        # TODO backpropagation
+        for nod in reversed(path):
+            nod.mean_value += value_n
+            nod.visit_count += 1
+
+        return 0.0,0.0,target_cell
     
     def ucb(self,parent):
         scores = {}
-        c1 = 0.2 ; c2 = 0.6
+        c1 = 1.25 ; c2 = 19652
         for action,child in parent.childs.items():
             x = (child.mean_value + child.prior)
             x *= (math.sqrt(parent.visit_count)) / (1 + child.visit_count)
@@ -183,11 +181,9 @@ class mcts:
 
 class replay_buffer:
     def init_buffer(self):
-        self.curr_obs = torch.empty(0,device=None)
-        self.nx_obs = torch.empty(0,device=None)
-        self.true_reward = torch.empty(0,device=None)
-        self.pred_reward = torch.empty(0,device=None)
-        self.actions = torch.empty(0,device=None)
+        self.mcts_pi = torch.empty((400,1),device=None)
+        self.mcts_value = torch.empty((400,1),device=None)
+        self.env_reward = torch.empty((400,1),device=None)
 
     def __init__(self,env,mcts):
         self.mcts = mcts
@@ -195,10 +191,23 @@ class replay_buffer:
         self.obs = self.env.reset()[0]
         self.init_buffer()
     
-    def step(self):
+    def step(self,n):
         with torch.no_grad():
-            self.mcts.search(process_obs(self.obs))
-            pass
+            mcts_pi,mcts_value,target_cell = self.mcts.search(process_obs(self.obs))
+            self.mcts_pi[n].copy_(mcts_pi)
+            self.mcts_value[n].copy_(mcts_value)
+
+            cell_value = 2 # TODO : sample from mcts policy
+            action = np.append(target_cell.numpy(),cell_value)
+            state,reward,done,trunc,info = self.env.step(action)
+            self.env_reward[n].copy_(reward)
+
+            if trunc or done:
+                self.obs = self.env.reset()[0]
+            
+            # save data 
+            self.obs = state
+            
 
     def sample(self):
         pass
@@ -291,10 +300,12 @@ class main:
     
     def run(self,start=False):
         if start:
-            self.replay_buffer.step()
-            #pass
+            for n in range(10):
+                self.replay_buffer.step(n)
+            
         
 
 if __name__ == "__main__":
     main().run(start=True)
     #mrv(env().reset()[0])
+    #print(n_step_return(torch.tensor([2,4,2,4])))
