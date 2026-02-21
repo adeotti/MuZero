@@ -55,12 +55,11 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         self.l3 = nn.LazyLinear(1)
 
     def forward(self,x,action): 
-        # action shape [2,3]
         x = self.conv1(x)
         x = self.conv2(x)
         latent_state = self.conv3(x) # 2.32.9.9
         
-        n = torch.cat([latent_state.flatten(1),action.T],dim=1)
+        n = torch.cat([latent_state.flatten(1),action.unsqueeze(0)],dim=1)
         n = self.l1(n)
         n = self.l2(n)
         reward = self.l3(n)
@@ -109,7 +108,7 @@ class mrv: # Cell sampling with Minimum Remaining value
         pass
 
     def sample_cell(self):
-        return torch.randint(0,9,(2,2))
+        return torch.randint(0,9,(2,))
 
 
 class node:
@@ -119,7 +118,7 @@ class node:
         self.mean_value = 0.0    # Q(s,a)
         self.policy = 0.0        # P(s,a)
         self.reward = 0.0        # R(s,a)
-        self.state = None       # S(s,a)
+        self.state = None        # S(s,a)
         self.childs = {}
 
     def is_expanded(self):
@@ -134,9 +133,7 @@ class mcts:
     def __init__(self,networks:list,mrv):
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.mrv = mrv
-
-    def cat_action(self,cell,value):
-        return torch.cat([cell,value])
+        self.cat_action = lambda cell,value : torch.cat([cell,value])
 
     def search(self,observation,num_sim=1):
         target_cell = self.mrv.sample_cell()
@@ -157,7 +154,12 @@ class mcts:
             depth += 1 
         
         a = self.ucb(root)
-        # expande node[a]
+        action = self.cat_action(target_cell,torch.tensor([a]))
+        reward_n,state_n = self.dyn_net(root.state,action)
+        policy_n,value_n = self.pred_net(state_n)
+        n_node = node(root.childs[a].prior)
+        n_node.state = state_n ; n_node.reward = reward_n ; n_node.visit_count = 1
+        depht += 1
     
     def ucb(self,parent):
         scores = {}
