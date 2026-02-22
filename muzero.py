@@ -131,7 +131,6 @@ class mcts:
         
         root = node(0) ; root.state = hidden_state
         depth = 0
-        # TODO : track path for backpropagation
     
         if not root.is_expanded(): # expand root + dirichlet noise on priors
             epsilon = 0.25 ; alpha = torch.full((9,),0.3)
@@ -155,13 +154,12 @@ class mcts:
         reward_n,state_n = self.dyn_net(parent.state,action)
         policy_n,value_n = self.pred_net(state_n)
     
-        current.state = state_n
-        current.reward = reward_n
+        current.state = state_n ; current.reward = reward_n
         for n, p in enumerate(policy_n.squeeze()):
             current.childs[n+1] = node(p.item())        
         depth += 1
 
-        for nod in reversed(path):
+        for nod in reversed(path): # backpropagation
             nod.mean_value += value_n
             nod.visit_count += 1
 
@@ -169,7 +167,7 @@ class mcts:
     
     def ucb(self,parent):
         scores = {}
-        c1 = 1.25 ; c2 = 19652
+        c1 = 1.25 ; c2 = 19652 # TODO update hypers
         for action,child in parent.childs.items():
             x = (child.mean_value + child.prior)
             x *= (math.sqrt(parent.visit_count)) / (1 + child.visit_count)
@@ -255,9 +253,7 @@ class main:
 
     def __init__(self):
         self.env = env()
-
         self.__init_nets()
-        """
         self.optim = Adam(
                 chain(
                     self.representation_net.parameters(),
@@ -266,19 +262,17 @@ class main:
                 ),
                 lr=0.0 # TODO : update lr
         )
-        """
         self.mrv = mrv(self.env.reset()[0])
         self.mcts = mcts(
                 (self.representation_net,self.dynamic_net,self.prediction_net),
                 self.mrv
         )
         self.replay_buffer = replay_buffer(self.env,self.mcts)
-        """
         self.l2 = l2_regularization(self.representation_net,
                          self.dynamic_net,
                          self.prediction_net
         )
-        """
+        
     def save(self):
         obj = {
             "representation_net_state":self.representation_net.state_dict(),                
@@ -303,7 +297,20 @@ class main:
             for n in range(10):
                 self.replay_buffer.step(n)
             
-        
+            """
+            loss_reward = None
+            loss_policy = None
+            loss_value = None
+            l2 = self.l2()
+            total_loss = loss_reward + loss_policy + loss_value + l2
+            self.optim.zero_grad(set_to_none=True)
+            total_loss.backward()
+            self.optim.step()
+
+            #TODO: log data
+            """
+
+            
 
 if __name__ == "__main__":
     main().run(start=True)
