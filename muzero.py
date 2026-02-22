@@ -157,7 +157,7 @@ class mcts:
         current.state = state_n ; current.reward = reward_n
         for n, p in enumerate(policy_n.squeeze()):
             current.childs[n+1] = node(p.item())        
-        depth += 1
+        # depth += 1
 
         for nod in reversed(path): # backpropagation
             nod.mean_value += value_n
@@ -182,6 +182,7 @@ class replay_buffer:
         self.mcts_pi = torch.empty((400,1),device=None)
         self.mcts_value = torch.empty((400,1),device=None)
         self.env_reward = torch.empty((400,1),device=None)
+        self.env_obs = torch.empty((400,1,9,9),device=None,dtype=torch.half)
 
     def __init__(self,env,mcts):
         self.mcts = mcts
@@ -193,6 +194,7 @@ class replay_buffer:
         with torch.no_grad():
             mcts_pi,mcts_value,target_cell = self.mcts.search(process_obs(self.obs))
             self.mcts_pi[n].copy_(mcts_pi)
+            self.env_obs[n].copy_(torch.as_tensor(self.obs))
             self.mcts_value[n].copy_(mcts_value)
 
             cell_value = 2 # TODO : sample from mcts policy
@@ -202,13 +204,11 @@ class replay_buffer:
 
             if trunc or done:
                 self.obs = self.env.reset()[0]
-            
-            # save data 
+             
             self.obs = state
             
-
-    def sample(self):
-        pass
+    def sample(self): # -> obs,action,reward
+        return None,None,None
 
 
 class l2_regularization():
@@ -228,7 +228,6 @@ class l2_regularization():
         for n in self.weights:
             l2 += n.square().sum()
         return 0.1*l2 # TODO Update coefficient
-
 
 def n_step_return(x): # value target
     pow_ = torch.arange(0,x.size(-1))
@@ -296,9 +295,27 @@ class main:
         if start:
             for n in range(10):
                 self.replay_buffer.step(n)
+
+            obs,action,reward = self.replay_buffer.sample()
+
+            s0 = self.representation_net(obs)
+            a = torch.empty((400,1),device=None)
+            r = torch.empty((400,1),device=None)
+            for _ in range(10):
+                # g(s0,at+1) -> s^1,r^1
+                # g(s^1,at+2) -> s^2,r^2
+                # ...
+                pass
             
-            """
-            loss_reward = None
+            p = torch.empty((400,1),device=None)
+            v = torch.empty((400,1),device=None)
+            for _ in range(10):
+                # f(s^1) -> p^1,v^1
+                # f(s^2) -> p^2,v^2
+                # ...
+                pass
+            
+            loss_reward = None 
             loss_policy = None
             loss_value = None
             l2 = self.l2()
@@ -308,7 +325,7 @@ class main:
             self.optim.step()
 
             #TODO: log data
-            """
+            print("here")
 
             
 
