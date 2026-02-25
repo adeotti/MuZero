@@ -125,13 +125,10 @@ class mcts:
 
     def search(self,observation,num_sim=1):
         target_cell = self.mrv.sample_cell()
-
         hidden_state = self.rep_net(observation)
         policy,value = self.pred_net(hidden_state)
-        
-        root = node(0) ; root.state = hidden_state
-        depth = 0
-    
+
+        root = node(0) ; root.state = hidden_state ; depth = 0
         if not root.is_expanded(): # expand root + dirichlet noise on priors
             epsilon = 0.25 ; alpha = torch.full((9,),0.3)
             noise = Dirichlet(alpha).sample()
@@ -152,8 +149,7 @@ class mcts:
         parent = path[-2]
         action = self.cat_action(target_cell,torch.tensor([a]))
         reward_n,state_n = self.dyn_net(parent.state,action)
-        policy_n,value_n = self.pred_net(state_n)
-    
+        policy_n,value_n = self.pred_net(state_n) 
         current.state = state_n ; current.reward = reward_n
         for n, p in enumerate(policy_n.squeeze()):
             current.childs[n+1] = node(p.item())        
@@ -240,14 +236,14 @@ class main:
         self.representation_net = representation_net()
         self.dynamic_net = dynamic_net()
         self.prediction_net = prediction_net()
-        """
+    
         init_state = torch.empty((2,11,9,9),device=None)
         action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action)
         policy,value = self.prediction_net(latent_state)
-        """
+    
         # TODO : init weights and compile nets
 
     def __init__(self):
@@ -298,7 +294,7 @@ class main:
 
             obs,action,reward = self.replay_buffer.sample()
 
-            s0 = self.representation_net(obs)
+            # s0 = self.representation_net(obs)
             a = torch.empty((400,1),device=None)
             r = torch.empty((400,1),device=None)
             for _ in range(10):
@@ -316,7 +312,7 @@ class main:
                 pass
             
             loss_reward = None 
-            loss_policy = None
+            loss_policy = None   
             loss_value = None
             l2 = self.l2()
             total_loss = loss_reward + loss_policy + loss_value + l2
@@ -325,8 +321,6 @@ class main:
             self.optim.step()
 
             #TODO: log data
-            print("here")
-
             
 
 if __name__ == "__main__":
