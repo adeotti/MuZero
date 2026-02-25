@@ -22,10 +22,6 @@ def process_obs(x): # -> one hot encoding + mask
     return torch.cat([x,m],dim=0).unsqueeze(0) 
 
 
-def init_weights(layers):
-    pass
-
-
 class representation_net(nn.Module): # h : state -> s^0
     def __init__(self):
         super().__init__()
@@ -125,8 +121,8 @@ class mcts:
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
     def search(self,observation,num_sim=1):
-        target_cell = self.mrv.sample_cell()
-        hidden_state = self.rep_net(observation)
+        target_cell = self.mrv(observation).sample_cell()
+        hidden_state = self.rep_net(process_obs(observation))
         policy,value = self.pred_net(hidden_state)
 
         root = node(0) ; root.state = hidden_state ; depth = 0
@@ -191,7 +187,7 @@ class replay_buffer:
     
     def step(self,n):
         with torch.no_grad():
-            mcts_pi,mcts_value,target_cell = self.mcts.search(process_obs(self.obs))
+            mcts_pi,mcts_value,target_cell = self.mcts.search(self.obs)
             self.mcts_pi[n].copy_(mcts_pi)
             self.env_obs[n].copy_(torch.as_tensor(self.obs))
             self.mcts_value[n].copy_(mcts_value)
@@ -265,7 +261,7 @@ class main:
                 ),
                 lr=0.0 # TODO : update lr
         )
-        self.mrv = mrv(self.env.reset()[0]) # TODO Update mrv state after each reset()
+        self.mrv = mrv # Unitialized instance of the mrv class
         self.mcts = mcts(
                 (self.representation_net,self.dynamic_net,self.prediction_net),
                 self.mrv
