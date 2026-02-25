@@ -1,8 +1,7 @@
 import torch,sys,os,gymnasium_sudoku,mlflow,random,math
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical
-from torch.distributions import Dirichlet
+from torch.distributions import Categorical,Dirichlet
 from torch.optim import Adam
 import gymnasium as gym
 import numpy as np
@@ -46,7 +45,7 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         self.conv1 = nn.LazyConv2d(32,3,1,1) # 256
         self.conv2 = nn.LazyConv2d(32,3,1,1) # 256
         self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
-        self.l1 = nn.LazyLinear(1024)
+        self.l1 = nn.LazyLinear(1024)   
         self.l2 = nn.LazyLinear(512)
         self.l3 = nn.LazyLinear(1)
 
@@ -86,6 +85,8 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
 
 class mrv: # Cell sampling with Minimum Remaining value
     def __init__(self,state):
+        # Compute the minimum required value once at the start of an horizon and cache the data then just keep
+        # sampling min(mrv cell) until env is done or trunc then recompute the entire mrv and cache and loop
         #self.state = torch.as_tensor(state[0]).unsqueeze(1).expand(9,9,9)
         #self.target = torch.arange(1,10).repeat(81).reshape(9,9,9)
         pass
@@ -93,7 +94,13 @@ class mrv: # Cell sampling with Minimum Remaining value
     def get_domains(self,state):
         pass
 
-    def sample_cell(self):
+    def sample_cell(self,env_trunc):
+        if env_trunc:
+            # TODO : recompute mrv entirely for the new state
+            pass
+        else:
+            # sample min(mrv cell) from cached data
+            pass
         return torch.randint(0,9,(2,))
 
 
@@ -120,8 +127,10 @@ class mcts:
         self.mrv = mrv
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
-    def search(self,observation,num_sim=1):
-        target_cell = self.mrv(observation).sample_cell()
+    def search(self,observation,env_trunc,num_sim=1):
+        _mrv = self.mrv(observation)
+        target_cell = _mrv.sample_cell(env_trunc)
+   
         hidden_state = self.rep_net(process_obs(observation))
         policy,value = self.pred_net(hidden_state)
 
@@ -185,27 +194,30 @@ class replay_buffer:
         self.obs = self.env.reset()[0]
         self.init_buffer()
     
-    def step(self,n):
-        with torch.no_grad():
-            mcts_pi,mcts_value,target_cell = self.mcts.search(self.obs)
-            self.mcts_pi[n].copy_(mcts_pi)
-            self.env_obs[n].copy_(torch.as_tensor(self.obs))
-            self.mcts_value[n].copy_(mcts_value)
+    def step(self):
+        trunc = done = False
+        for n in range(10): # TODO update batchsize
+            with torch.no_grad():
+                mcts_pi,mcts_value,target_cell = self.mcts.search(self.obs,trunc)
+                self.mcts_pi[n].copy_(mcts_pi)
+                self.env_obs[n].copy_(torch.as_tensor(self.obs))
+                self.mcts_value[n].copy_(mcts_value)
 
-            cell_value = 2 # TODO : sample from mcts policy
-            action = np.append(target_cell.numpy(),cell_value)
-            self.mcts_action[n].copy_(torch.as_tensor(action))
+                cell_value = 2 # TODO : sample from mcts policy
+                action = np.append(target_cell.numpy(),cell_value)
+                self.mcts_action[n].copy_(torch.as_tensor(action))
 
-            state,reward,done,trunc,info = self.env.step(action)
-            self.env_reward[n].copy_(reward)
+                state,reward,done,trunc,info = self.env.step(action)
+                self.env_reward[n].copy_(reward)
 
-            if trunc or done:
-                self.obs = self.env.reset()[0]
- 
-            self.obs = state
+                if trunc or done: 
+                    self.obs = self.env.reset()[0]
+
+                else: 
+                    self.obs = state
             
-    def sample(self): # -> obs,action,reward
-        return None,None,None
+    def sample(self): # -> obs,action,reward,value
+        return None,None,None,None
 
 
 class l2_regularization():
@@ -293,14 +305,12 @@ class main:
     
     def run(self,start=False):
         if start:
-            for n in range(10):
-                self.replay_buffer.step(n)
-
-            obs,action,reward = self.replay_buffer.sample()
+            self.replay_buffer.step()
+            obs,action,env_reward_rewards,mcts_value = self.replay_buffer.sample()
 
             # s0 = self.representation_net(obs)
             a = torch.empty((400,1),device=None)
-            r = torch.empty((400,1),device=None)
+            target_rewards = torch.empty((400,1),device=None)
             for _ in range(10):
                 # g(s0,at+1) -> s^1,r^1
                 # g(s^1,at+2) -> s^2,r^2
@@ -315,8 +325,8 @@ class main:
                 # ...
                 pass
             
-            loss_reward = None # loss_r(rewards,target_reward) 
-            loss_value = None # loss_v(value,target_value)
+            loss_reward = None # loss_r(env_rewards,target_rewards) 
+            loss_value = None # loss_v(mcts_value,target_value)
             loss_policy = None # loss_p(pi,prediction)   
             l2 = self.l2()
             
