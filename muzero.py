@@ -39,7 +39,7 @@ class representation_net(nn.Module): # h : state -> s^0
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
-        x = self.conv4(x) # 2.32.9.9
+        x = self.conv4(x) # [1,32,9,9]
         return x
 
 
@@ -56,7 +56,7 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
     def forward(self,x,action): 
         x = self.conv1(x)
         x = self.conv2(x)
-        latent_state = self.conv3(x) # 2.32.9.9
+        latent_state = self.conv3(x) # [1,32,9,9]
         n = torch.cat([latent_state.flatten(1),action.unsqueeze(0)],dim=1)
         n = self.l1(n)
         n = self.l2(n)
@@ -177,6 +177,8 @@ class replay_buffer:
     def init_buffer(self):
         self.mcts_pi = torch.empty((400,1),device=None)
         self.mcts_value = torch.empty((400,1),device=None)
+        self.mcts_action = torch.empty((400,3),device=None)
+
         self.env_reward = torch.empty((400,1),device=None)
         self.env_obs = torch.empty((400,1,9,9),device=None,dtype=torch.half)
 
@@ -195,12 +197,14 @@ class replay_buffer:
 
             cell_value = 2 # TODO : sample from mcts policy
             action = np.append(target_cell.numpy(),cell_value)
+            self.mcts_action[n].copy_(torch.as_tensor(action))
+
             state,reward,done,trunc,info = self.env.step(action)
             self.env_reward[n].copy_(reward)
 
             if trunc or done:
                 self.obs = self.env.reset()[0]
-             
+ 
             self.obs = state
             
     def sample(self): # -> obs,action,reward
@@ -237,8 +241,10 @@ class main:
         self.dynamic_net = dynamic_net()
         self.prediction_net = prediction_net()
     
-        init_state = torch.empty((2,11,9,9),device=None)
-        action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
+        init_state = torch.empty((1,11,9,9),device=None)
+        action = torch.as_tensor(self.env.action_space.sample(),device=None)
+        #sys.exit(action.shape)
+        # action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action)
@@ -257,7 +263,7 @@ class main:
                 ),
                 lr=0.0 # TODO : update lr
         )
-        self.mrv = mrv(self.env.reset()[0])
+        self.mrv = mrv(self.env.reset()[0]) # TODO Update mrv state after each reset()
         self.mcts = mcts(
                 (self.representation_net,self.dynamic_net,self.prediction_net),
                 self.mrv
@@ -311,11 +317,12 @@ class main:
                 # ...
                 pass
             
-            loss_reward = None 
-            loss_policy = None   
-            loss_value = None
+            loss_reward = None # loss_r(rewards,target_reward) 
+            loss_value = None # loss_v(value,target_value)
+            loss_policy = None # loss_p(pi,prediction)   
             l2 = self.l2()
-            total_loss = loss_reward + loss_policy + loss_value + l2
+            
+            total_loss = torch.tensor([0.0],requires_grad=True) # loss_reward + loss_policy + loss_value + l2
             self.optim.zero_grad(set_to_none=True)
             total_loss.backward()
             self.optim.step()
