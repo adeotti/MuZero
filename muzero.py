@@ -29,13 +29,14 @@ def init_weights(layers):
 class representation_net(nn.Module): # h : state -> s^0
     def __init__(self):
         super().__init__()
-        # TODO : Add distributed representation layer
+        self.input_emb = nn.Parameter(torch.randn(11,64) * 0.1)
         self.conv1 = nn.LazyConv2d(32,1,1)   # 128
         self.conv2 = nn.LazyConv2d(32,3,1,1) # 256
         self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
         self.conv4 = nn.LazyConv2d(32,3,1,1) # 256
 
-    def forward(self,x):
+    def forward(self,x): 
+        x = torch.einsum("nbrc,bo->norc",x,self.input_emb) 
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
@@ -242,14 +243,15 @@ class main:
         self.prediction_net = prediction_net()
     
         init_state = torch.empty((1,11,9,9),device=None)
-        action = torch.as_tensor(self.env.action_space.sample(),device=None)
-        #sys.exit(action.shape)
-        # action = torch.as_tensor(np.stack(self.env.action_space.sample()),device=None)
+        action = torch.as_tensor(self.env.action_space.sample(),device=None) 
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action)
         policy,value = self.prediction_net(latent_state)
-    
+        
+        def init_weights(layers):
+            pass
+
         # TODO : init weights and compile nets
 
     def __init__(self):
