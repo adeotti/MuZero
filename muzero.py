@@ -10,6 +10,25 @@ from torch.utils.tensorboard import SummaryWriter
 from itertools import chain
 
 
+@dataclass(frozen=False)
+class main_hypers:
+    pass
+
+
+@dataclass(frozen=False)
+class mcts_hypers:
+    num_sim = 1
+    max_depth = 1
+
+    #dirichlet
+    epsilon = 0
+    alpha_value = 0.3
+
+    #ucb
+    c1 = 1.25
+    c2 = 19652
+
+
 def env():
     x = gym.make("sudoku-v1",mode="easy",horizon=400)
     return x
@@ -123,6 +142,7 @@ class node:
 
 class mcts:
     def __init__(self,networks:list,mrv):
+        self.mcts_hypers = mcts_hypers()
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.mrv = mrv
         self.cat_action = lambda cell,value : torch.cat([cell,value])
@@ -137,10 +157,10 @@ class mcts:
         root = node(0) ; root.state = hidden_state ; depth = 0
 
         if not root.is_expanded(): # expand root + dirichlet noise on priors
-            epsilon = 0.25 ; alpha = torch.full((9,),0.3)
+            alpha = torch.full((9,),self.mcts_hypers.alpha_value)
             noise = Dirichlet(alpha).sample()
             for n,p in enumerate(policy.squeeze()):
-                prior = (1 - epsilon) * p.item() + epsilon * noise[n].item() 
+                prior = (1 - self.mcts_hypers.epsilon) * p.item() + self.mcts_hypers.epsilon * noise[n].item() 
                 # p'(a) = (1-epsilon) * p'(a) + (epsilon * noise)
                 root.childs[n+1] = node(round(prior,4))
             depth += 1 
@@ -176,7 +196,8 @@ class mcts:
     
     def ucb(self,parent):
         scores = {}
-        c1 = 1.25 ; c2 = 19652 # TODO update hypers
+        c1 = self.mcts_hypers.c1  ; c2 = self.mcts_hypers.c2 
+
         for action,child in parent.childs.items():
             x = (child.mean_value + child.prior)
             x *= (math.sqrt(parent.visit_count)) / (1 + child.visit_count)
