@@ -135,6 +135,7 @@ class mcts:
         policy,value = self.pred_net(hidden_state)
 
         root = node(0) ; root.state = hidden_state ; depth = 0
+
         if not root.is_expanded(): # expand root + dirichlet noise on priors
             epsilon = 0.25 ; alpha = torch.full((9,),0.3)
             noise = Dirichlet(alpha).sample()
@@ -144,23 +145,29 @@ class mcts:
                 root.childs[n+1] = node(round(prior,4))
             depth += 1 
         
-        for _ in range(10):
-            path = [root]
-            current = root
-            while current.is_expanded():
-                a = self.ucb(current)
-                current = current.childs[a]
-                path.append(current)
+        #for _ in range(10): # for n in range simulation
+        path = [root]
+        current_node = root
         
+        while current_node.is_expanded():
+            action = self.ucb(current_node)
+            current_node = current_node.childs[action]
+            path.append(current_node)
+            depth+=1
+        
+        # expand leaf node from parent's hidden state
         parent = path[-2]
-        action = self.cat_action(target_cell,torch.tensor([a]))
+        action = self.cat_action(target_cell,torch.tensor([action]))
         reward_n,state_n = self.dyn_net(parent.state,action)
         policy_n,value_n = self.pred_net(state_n) 
-        current.state = state_n ; current.reward = reward_n
-        for n, p in enumerate(policy_n.squeeze()):
-            current.childs[n+1] = node(p.item())        
-        # depth += 1
-
+        
+        path[-1].state = state_n ; path[-1].reward = reward_n
+        
+        for n, p in enumerate(policy_n.squeeze()): # create child
+            path[-1].childs[n+1] = node(p.item())        
+    
+        
+        # TODO Update backpropagated statistics
         for nod in reversed(path): # backpropagation
             nod.mean_value += value_n
             nod.visit_count += 1
@@ -212,7 +219,6 @@ class replay_buffer:
 
                 if trunc or done: 
                     self.obs = self.env.reset()[0]
-
                 else: 
                     self.obs = state
             
@@ -309,7 +315,7 @@ class main:
             obs,action,env_reward_rewards,mcts_value = self.replay_buffer.sample()
 
             # s0 = self.representation_net(obs)
-            a = torch.empty((400,1),device=None)
+            s = torch.empty((400,1),device=None)
             target_rewards = torch.empty((400,1),device=None)
             for _ in range(10):
                 # g(s0,at+1) -> s^1,r^1
