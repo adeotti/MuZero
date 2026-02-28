@@ -1,10 +1,11 @@
 import torch,sys,os,gymnasium_sudoku,mlflow,random,math
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical,Dirichlet
-from torch.optim import Adam
 import gymnasium as gym
 import numpy as np
+
+from torch.distributions import Categorical,Dirichlet
+from torch.optim import Adam
 from dataclasses import dataclass
 from torch.utils.tensorboard import SummaryWriter
 from itertools import chain
@@ -12,25 +13,27 @@ from itertools import chain
 
 @dataclass(frozen=False)
 class main_hypers:
-    pass
+    env_horizon = 400
+    batch_size = 10
+    mini_batch = 2
 
 
 @dataclass(frozen=False)
 class mcts_hypers:
-    num_sim = 1
+    num_sim = 10
     max_depth = 1
 
-    #dirichlet
-    epsilon = 0
+    epsilon = 0         # dirichlet
     alpha_value = 0.3
 
-    #ucb
-    c1 = 1.25
+    c1 = 1.25           # ucb
     c2 = 19652
 
+    gamma = 0.1         # backpropagation
 
-def env():
-    x = gym.make("sudoku-v1",mode="easy",horizon=400)
+
+def env(horizon=None):
+    x = gym.make("sudoku-v1",mode="easy",horizon=horizon)
     return x
 
 def process_obs(x): # -> one hot encoding + mask
@@ -147,7 +150,7 @@ class mcts:
         self.mrv = mrv
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
-    def search(self,observation,env_trunc,num_sim=1):
+    def search(self,observation,env_trunc):
         _mrv = self.mrv(observation)
         target_cell = _mrv.sample_cell(env_trunc)
    
@@ -160,39 +163,43 @@ class mcts:
             alpha = torch.full((9,),self.mcts_hypers.alpha_value)
             noise = Dirichlet(alpha).sample()
             for n,p in enumerate(policy.squeeze()):
-                prior = (1 - self.mcts_hypers.epsilon) * p.item() + self.mcts_hypers.epsilon * noise[n].item() 
                 # p'(a) = (1-epsilon) * p'(a) + (epsilon * noise)
+                prior = (1 - self.mcts_hypers.epsilon) * p.item() 
+                prior += self.mcts_hypers.epsilon * noise[n].item() 
                 root.childs[n+1] = node(round(prior,4))
             depth += 1 
         
-        #for _ in range(10): # for n in range simulation
-        path = [root]
-        current_node = root
-        
-        while current_node.is_expanded():
-            action = self.ucb(current_node)
-            current_node = current_node.childs[action]
-            path.append(current_node)
-            depth+=1
-        
-        # expand leaf node from parent's hidden state
-        parent = path[-2]
-        action = self.cat_action(target_cell,torch.tensor([action]))
-        reward_n,state_n = self.dyn_net(parent.state,action)
-        policy_n,value_n = self.pred_net(state_n) 
-        
-        path[-1].state = state_n ; path[-1].reward = reward_n
-        
-        for n, p in enumerate(policy_n.squeeze()): # create child
-            path[-1].childs[n+1] = node(p.item())        
+        for _ in range(self.mcts_hypers.num_sim): # for n in range simulation
+            path = [root]
+            current_node = root
+            
+            while current_node.is_expanded():
+                action = self.ucb(current_node)
+                current_node = current_node.childs[action]
+                path.append(current_node)
+                depth+=1
+            
+            # expand leaf node from parent's hidden state
+            parent = path[-2]
+            action = self.cat_action(target_cell,torch.tensor([action]))
+            reward_n,state_n = self.dyn_net(parent.state,action)
+            policy_n,value_n = self.pred_net(state_n) 
+            
+            path[-1].state = state_n ; path[-1].reward = reward_n
+            
+            for n, p in enumerate(policy_n.squeeze()): # create childs
+                path[-1].childs[n+1] = node(p.item())        
+         
+            for nod in reversed(path): # backpropagation
+                nod.visit_count += 1
+                nod.mean_value += value_n
+                value_n = nod.reward + self.mcts_hypers.gamma * value_n
     
-        
-        # TODO Update backpropagated statistics
-        for nod in reversed(path): # backpropagation
-            nod.mean_value += value_n
-            nod.visit_count += 1
-
-        return 0.0,0.0,target_cell
+        #print(depth)
+        pi = 0.0
+        a = max(root.childs.keys(), key=lambda a: root.childs[a].visit_count)
+        v = root.childs[a].mean_value
+        return pi,a,v.squeeze(),target_cell
     
     def ucb(self,parent):
         scores = {}
@@ -216,22 +223,23 @@ class replay_buffer:
         self.env_reward = torch.empty((400,1),device=None)
         self.env_obs = torch.empty((400,1,9,9),device=None,dtype=torch.half)
 
-    def __init__(self,env,mcts):
+    def __init__(self,env,mcts,hypers):
         self.mcts = mcts
         self.env = env
         self.obs = self.env.reset()[0]
         self.init_buffer()
-    
+        self.hypers = hypers
+
     def step(self):
         trunc = done = False
-        for n in range(10): # TODO update batchsize
+        for n in range(self.hypers.batch_size):
             with torch.no_grad():
-                mcts_pi,mcts_value,target_cell = self.mcts.search(self.obs,trunc)
+                mcts_pi,mcts_action,mcts_value,target_cell = self.mcts.search(self.obs,trunc)
                 self.mcts_pi[n].copy_(mcts_pi)
                 self.env_obs[n].copy_(torch.as_tensor(self.obs))
                 self.mcts_value[n].copy_(mcts_value)
 
-                cell_value = 2 # TODO : sample from mcts policy
+                cell_value = mcts_a # TODO : sample from mcts policy
                 action = np.append(target_cell.numpy(),cell_value)
                 self.mcts_action[n].copy_(torch.as_tensor(action))
 
@@ -290,7 +298,9 @@ class main:
         # TODO : init weights and compile nets
 
     def __init__(self):
-        self.env = env()
+        self.main_hypers = main_hypers()
+        self.env = env(self.main_hypers.env_horizon)
+
         self.__init_nets()
         self.optim = Adam(
                 chain(
@@ -300,12 +310,15 @@ class main:
                 ),
                 lr=0.0 # TODO : update lr
         )
+
         self.mrv = mrv # Unitialized instance of the mrv class
         self.mcts = mcts(
                 (self.representation_net,self.dynamic_net,self.prediction_net),
                 self.mrv
         )
-        self.replay_buffer = replay_buffer(self.env,self.mcts)
+        
+        self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
+        
         self.l2 = l2_regularization(self.representation_net,
                          self.dynamic_net,
                          self.prediction_net
