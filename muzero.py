@@ -137,11 +137,6 @@ class node:
 
     def is_expanded(self):
         return len(self.childs) > 0
-    
-    def expand(self,state,reward):
-        self.state = state
-        self.reward = reward
-
 
 class mcts:
     def __init__(self,networks:list,mrv):
@@ -239,8 +234,7 @@ class replay_buffer:
                 self.env_obs[n].copy_(torch.as_tensor(self.obs))
                 self.mcts_value[n].copy_(mcts_value)
 
-                cell_value = mcts_a # TODO : sample from mcts policy
-                action = np.append(target_cell.numpy(),cell_value)
+                action = np.append(target_cell.numpy(),mcts_a)
                 self.mcts_action[n].copy_(torch.as_tensor(action))
 
                 state,reward,done,trunc,info = self.env.step(action)
