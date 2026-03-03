@@ -17,6 +17,7 @@ class main_hypers:
     env_horizon = 400
     batch_size = 800
     mini_batch = 40
+    lr = 0.001
 
 
 @dataclass(frozen=False)
@@ -274,12 +275,7 @@ class l2_regularization():
         l2 = 0.0
         for n in self.weights:
             l2 += n.square().sum()
-        return l2 # TODO Update coefficient
-
-def n_step_return(x): # value target
-    pow_ = torch.arange(0,x.size(-1))
-    n = torch.pow(x,pow_).sum(-1) 
-    return n
+        return l2 
 
 
 class main:
@@ -311,21 +307,15 @@ class main:
                     self.dynamic_net.parameters(),
                     self.prediction_net.parameters()
                 ),
-                lr=0.0 # TODO : update lr
+                lr = self.main_hypers.lr
         )
-
         self.mrv = mrv # Unitialized instance of the mrv class
         self.mcts = mcts(
                 (self.representation_net,self.dynamic_net,self.prediction_net),
                 self.mrv
-        )
-        
+        ) 
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
-        
-        self.l2 = l2_regularization(self.representation_net,
-                         self.dynamic_net,
-                         self.prediction_net
-        )
+        self.l2 = l2_regularization(self.representation_net,self.dynamic_net,self.prediction_net)
         
     def save(self):
         obj = {
@@ -368,14 +358,9 @@ class main:
                 # ...
                 pass
             
-            loss_reward = None 
-            loss_value = None # loss_v(mcts_value,target_value)
-            loss_policy = None # loss_p(pi,prediction)   
-            l2 = self.l2()
-
-            #total_loss = loss_r(env_rewards,target_rewards)
-            #total_loss += loss value
-            #total_loss += loss_policy
+            #total_loss = loss_reward(env_rewards,target_rewards)
+            #total_loss += loss_value(mcts_value,target_value)
+            #total_loss += loss_policy(pi,prediction)
             #total_loss += c * self.l2()
             
             total_loss = torch.tensor([0.0],requires_grad=True) # loss_reward + loss_policy + loss_value + l2
