@@ -13,14 +13,15 @@ from itertools import chain
 
 @dataclass(frozen=False)
 class main_hypers:
+    device = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     env_horizon = 400
-    batch_size = 10
-    mini_batch = 2
+    batch_size = 800
+    mini_batch = 40
 
 
 @dataclass(frozen=False)
 class mcts_hypers:
-    num_sim = 10
+    num_sim = 5
     max_depth = 1
 
     epsilon = 0         # dirichlet
@@ -85,9 +86,9 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
 class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.LazyConv2d(32,3,1,1)
-        self.conv2 = nn.LazyConv2d(32,3,1,1)
-        self.conv3 = nn.LazyConv2d(32,3,1,1)
+        self.conv1 = nn.LazyConv2d(32,3,1,1) # 256
+        self.conv2 = nn.LazyConv2d(32,3,1,1) # 256
+        self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
         self.l1 = nn.LazyLinear(1024)
         self.l2 = nn.LazyLinear(512)
         self.policy = nn.LazyLinear(9)
@@ -190,11 +191,10 @@ class mcts:
                 nod.mean_value += value_n
                 value_n = nod.reward + self.mcts_hypers.gamma * value_n
     
-        #print(depth)
         pi = 0.0
-        a = max(root.childs.keys(), key=lambda a: root.childs[a].visit_count)
+        a = max(root.childs.keys(),key=lambda a: root.childs[a].visit_count)
         v = root.childs[a].mean_value
-        return pi,a,v.squeeze(),target_cell
+        return pi,a,v.squeeze(),target_cell,depth
     
     def ucb(self,parent):
         scores = {}
@@ -211,41 +211,50 @@ class mcts:
 
 class replay_buffer:
     def init_buffer(self):
-        self.mcts_pi = torch.empty((400,1),device=None)
-        self.mcts_value = torch.empty((400,1),device=None)
-        self.mcts_action = torch.empty((400,3),device=None)
+        self.mcts_pi = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
+        self.mcts_value = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
+        self.mcts_action = torch.empty((self.hypers.batch_size,3),device=self.hypers.device)
 
-        self.env_reward = torch.empty((400,1),device=None)
-        self.env_obs = torch.empty((400,1,9,9),device=None,dtype=torch.half)
+        self.env_reward = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
+        self.env_obs = torch.empty((self.hypers.batch_size,1,9,9),device=self.hypers.device,dtype=torch.half)
+        self.env_trunc = torch.empty((self.hypers.batch_size,1),device=self.hypers.device,dtype=torch.bool)
 
     def __init__(self,env,mcts,hypers):
-        self.mcts = mcts
         self.env = env
+        self.mcts = mcts
+        self.hypers = hypers
         self.obs = self.env.reset()[0]
         self.init_buffer()
-        self.hypers = hypers
-
+        
     def step(self):
         trunc = done = False
-        for n in range(self.hypers.batch_size):
-            with torch.no_grad():
-                mcts_pi,mcts_action,mcts_value,target_cell = self.mcts.search(self.obs,trunc)
+        with torch.no_grad():
+            for n in range(self.hypers.batch_size):
+                mcts_pi,mcts_action,mcts_value,target_cell,_ = self.mcts.search(self.obs,trunc)
+                action = np.append(target_cell.numpy(),mcts_action)
+                state,reward,done,trunc,info = self.env.step(action)
+
                 self.mcts_pi[n].copy_(mcts_pi)
                 self.env_obs[n].copy_(torch.as_tensor(self.obs))
                 self.mcts_value[n].copy_(mcts_value)
-
-                action = np.append(target_cell.numpy(),mcts_a)
                 self.mcts_action[n].copy_(torch.as_tensor(action))
-
-                state,reward,done,trunc,info = self.env.step(action)
                 self.env_reward[n].copy_(reward)
+                self.env_trunc[n].copy_(trunc)
 
-                if trunc or done: 
+                if trunc: 
                     self.obs = self.env.reset()[0]
                 else: 
                     self.obs = state
             
-    def sample(self): # -> obs,action,reward,value
+            self.value_target = torch.empty(*self.mcts_value.shape,device=self.hypers.device)
+            gamma = torch.pow(torch.full((self.hypers.batch_size,),0.2),torch.arange(self.hypers.batch_size))
+            mask = (1 - self.env_trunc.float()).cumprod(0) 
+            for n in range(self.hypers.batch_size):                
+                self.value_target[n] = (
+                    (self.env_reward[n:].squeeze() * gamma[n:] * mask[n:].squeeze()) + self.mcts_value[n]
+                ).sum()
+            
+    def sample(self): # -> obs,action,reward,mcts_value,value_target
         return None,None,None,None
 
 
@@ -265,7 +274,7 @@ class l2_regularization():
         l2 = 0.0
         for n in self.weights:
             l2 += n.square().sum()
-        return 0.1*l2 # TODO Update coefficient
+        return l2 # TODO Update coefficient
 
 def n_step_return(x): # value target
     pow_ = torch.arange(0,x.size(-1))
@@ -335,7 +344,7 @@ class main:
         self.optim.load_state_dict(obj["optim_state"])
 
     def log_data(self):
-        pass
+        pass 
     
     def run(self,start=False):
         if start:
@@ -359,10 +368,15 @@ class main:
                 # ...
                 pass
             
-            loss_reward = None # loss_r(env_rewards,target_rewards) 
+            loss_reward = None 
             loss_value = None # loss_v(mcts_value,target_value)
             loss_policy = None # loss_p(pi,prediction)   
             l2 = self.l2()
+
+            #total_loss = loss_r(env_rewards,target_rewards)
+            #total_loss += loss value
+            #total_loss += loss_policy
+            #total_loss += c * self.l2()
             
             total_loss = torch.tensor([0.0],requires_grad=True) # loss_reward + loss_policy + loss_value + l2
             self.optim.zero_grad(set_to_none=True)
