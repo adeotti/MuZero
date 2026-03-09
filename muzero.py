@@ -21,6 +21,7 @@ class main_hypers:
     mini_batch = 40
     lr = 0.001
     k = 5
+    l2_coeff = 0.1
 
 @dataclass(frozen=False)
 class mcts_hypers:
@@ -189,7 +190,7 @@ class mcts:
                 nod.mean_value += value_n
                 value_n = nod.reward + self.mcts_hypers.gamma * value_n
     
-        pi = 0.0
+        pi = torch.rand((1,9))
         a = max(root.childs.keys(),key=lambda a: root.childs[a].visit_count)
         v = root.childs[a].mean_value
         return pi,a,v.squeeze(),target_cell,depth
@@ -209,7 +210,7 @@ class mcts:
 
 class replay_buffer:
     def init_buffer(self):
-        self.mcts_pi = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
+        self.mcts_pi = torch.empty((self.hypers.batch_size,1,9),device=self.hypers.device)
         self.mcts_value = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
         self.mcts_action = torch.empty((self.hypers.batch_size,3),device=self.hypers.device)
         #
@@ -263,11 +264,12 @@ class replay_buffer:
         end = start + self.hypers.k
         
         s_obs = self.env_obs[start:end]                   # Observation
+        s_pi = self.mcts_pi[start:end]                    # Pi
         s_action = self.mcts_action[start:end]            # Action
         s_reward = self.env_reward[start:end]             # Reward
         s_value = self.mcts_value[start:end]              # Mcts Value
         s_value_target = self.value_target[start:end]     # Value Target
-        return s_obs,s_action,s_reward,s_value,s_value_target
+        return s_obs,s_pi,s_action,s_reward,s_value,s_value_target
 
 
 class l2_regularization():
@@ -353,12 +355,10 @@ class main:
                 self.replay_buffer.step()
 
                 if self.replay_buffer.pointer >= self.main_hypers.warmup:
-                    obs,action,reward,mcts_value,value_target = self.replay_buffer.sample()
+                    obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
 
-                    hidden_rep = self.representation_net(obs)
-         
+                    hidden_rep = self.representation_net(obs) 
                     u_reward,u_value,u_policy = [],[],[]
-
                     for i in range(self.main_hypers.k):
                         r,s = self.dynamic_net(hidden_rep[i].unsqueeze(0),action[i])
                         p,v = self.prediction_net(s)
@@ -370,13 +370,13 @@ class main:
                     u_reward = torch.stack(u_reward).squeeze(-1)
                     u_value = torch.stack(u_value).squeeze(-1)
                     u_policy = torch.stack(u_policy).squeeze()
-
-                    #total_loss = loss_reward(env_rewards,target_rewards)
-                    #total_loss += loss_value(mcts_value,target_value)
-                    #total_loss += loss_policy(pi,prediction)
-                    #total_loss += c * self.l2()
                     
-                    total_loss = torch.tensor([0.0],requires_grad=True) # loss_r+ loss_po+ loss_value + l2
+                    total_loss = (u_reward.T @ reward.log()).mean()
+                    total_loss += (u_value.T @ value_target.log()).mean()
+                    total_loss += (u_policy.T @ pi.squeeze()).mean()
+                    total_loss += self.main_hypers.l2_coeff * self.l2()
+                
+                    total_loss = torch.tensor([0.0],requires_grad=True)
                     self.optim.zero_grad(set_to_none=True)
                     total_loss.backward()
                     self.optim.step()
