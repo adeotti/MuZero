@@ -6,32 +6,33 @@ import numpy as np
 
 from torch.distributions import Categorical,Dirichlet
 from torch.optim import Adam
-from dataclasses import dataclass
+from dataclasses import dataclass,asdict
 from torch.utils.tensorboard import SummaryWriter
 from itertools import chain
+from tqdm import tqdm
 
 
-@dataclass(frozen=False)
+@dataclass(frozen=True)
 class main_hypers:
-    device = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
-    max_steps = 1_000
-    warmup = 400
-    env_horizon = 400
-    batch_size = 800
-    mini_batch = 40
-    lr = 0.001
-    k = 5
-    l2_coeff = 0.1
+    device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
+    max_steps: int = 1_000
+    warmup: int = 400
+    env_horizon: int = 400
+    batch_size: int = 800
+    mini_batch: int = 40
+    lr: int = 0.001
+    k: int = 5
+    l2_coeff: int = 0.1
 
-@dataclass(frozen=False)
+@dataclass(frozen=True)
 class mcts_hypers:
-    num_sim = 5
-    max_depth = 1
-    epsilon = 0 # dirichlet
-    alpha_value = 0.3   
-    c1 = 1.25    # ucb
-    c2 = 19652 
-    gamma = 0.1         # backpropagation
+    num_sim: int = 5
+    max_depth: int = 1
+    epsilon: int = 0 # dirichlet
+    alpha_value: int = 0.3   
+    c1: int = 1.25    # ucb
+    c2: int = 19652 
+    gamma: int = 0.1         # backpropagation
 
 
 def env(horizon=None):
@@ -351,37 +352,47 @@ class main:
     
     def run(self,start=False):
         if start:
-            for _ in range(self.main_hypers.max_steps):
-                self.replay_buffer.step()
+            mlflow.end_run()
+            mlflow.set_experiment("Muzero")
+            
+            with mlflow.start_run() as run:
+                mlflow.log_params(asdict(self.main_hypers))
+                mlflow.log_params(asdict(self.replay_buffer.hypers))
 
-                if self.replay_buffer.pointer >= self.main_hypers.warmup:
-                    obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
+                for _ in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
+                    self.replay_buffer.step()
 
-                    hidden_rep = self.representation_net(obs) 
-                    u_reward,u_value,u_policy = [],[],[]
-                    for i in range(self.main_hypers.k):
-                        r,s = self.dynamic_net(hidden_rep[i].unsqueeze(0),action[i])
-                        p,v = self.prediction_net(s)
+                    if self.replay_buffer.pointer >= self.main_hypers.warmup:
+                        obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
 
-                        u_reward.append(r)
-                        u_value.append(v)
-                        u_policy.append(p)
-                     
-                    u_reward = torch.stack(u_reward).squeeze(-1)
-                    u_value = torch.stack(u_value).squeeze(-1)
-                    u_policy = torch.stack(u_policy).squeeze()
+                        hidden_rep = self.representation_net(obs) 
+                        u_reward,u_value,u_policy = [],[],[]
+                        for i in range(self.main_hypers.k):
+                            r,s = self.dynamic_net(hidden_rep[i].unsqueeze(0),action[i])
+                            p,v = self.prediction_net(s)
+
+                            u_reward.append(r)
+                            u_value.append(v)
+                            u_policy.append(p)
+                         
+                        u_reward = torch.stack(u_reward).squeeze(-1)
+                        u_value = torch.stack(u_value).squeeze(-1)
+                        u_policy = torch.stack(u_policy).squeeze()
+                        
+                        total_loss = (u_reward.T @ reward.log()).mean()
+                        total_loss += (u_value.T @ value_target.log()).mean()
+                        total_loss += (u_policy.T @ pi.squeeze()).mean()
+                        total_loss += self.main_hypers.l2_coeff * self.l2()
                     
-                    total_loss = (u_reward.T @ reward.log()).mean()
-                    total_loss += (u_value.T @ value_target.log()).mean()
-                    total_loss += (u_policy.T @ pi.squeeze()).mean()
-                    total_loss += self.main_hypers.l2_coeff * self.l2()
-                
-                    total_loss = torch.tensor([0.0],requires_grad=True)
-                    self.optim.zero_grad(set_to_none=True)
-                    total_loss.backward()
-                    self.optim.step()
+                        total_loss = torch.tensor([0.0],requires_grad=True)
+                        self.optim.zero_grad(set_to_none=True)
+                        total_loss.backward()
+                        self.optim.step()
 
-                    #TODO: log data
+                        #TODO: log data
+                
+                
+
             
 
 if __name__ == "__main__":
