@@ -77,7 +77,7 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         x = self.conv1(x)
         x = self.conv2(x)
         latent_state = self.conv3(x) # [1,32,9,9]
-        n = torch.cat([latent_state.flatten(1),action.unsqueeze(0)],dim=1)
+        n = torch.cat([latent_state.flatten(1),action],dim=1)
         n = self.l1(n)
         n = self.l2(n)
         reward = self.l3(n)
@@ -178,7 +178,7 @@ class mcts:
             # expand leaf node from parent's hidden state
             parent = path[-2]
             action = self.cat_action(target_cell,torch.tensor([action]))
-            reward_n,state_n = self.dyn_net(parent.state,action)
+            reward_n,state_n = self.dyn_net(parent.state,action.unsqueeze(0))
             policy_n,value_n = self.pred_net(state_n) 
             
             path[-1].state = state_n ; path[-1].reward = reward_n
@@ -213,7 +213,7 @@ class replay_buffer:
     def init_buffer(self):
         self.mcts_pi = torch.empty((self.hypers.batch_size,1,9),device=self.hypers.device)
         self.mcts_value = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
-        self.mcts_action = torch.empty((self.hypers.batch_size,3),device=self.hypers.device)
+        self.mcts_action = torch.empty((self.hypers.batch_size,1,3),device=self.hypers.device)
         #
         self.env_reward = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
         self.env_obs = torch.empty((self.hypers.batch_size,1,9,9),device=self.hypers.device,dtype=torch.half)
@@ -302,7 +302,7 @@ class main:
         action = torch.as_tensor(self.env.action_space.sample(),device=None)
         
         hidden_state = self.representation_net(init_state)
-        reward,latent_state = self.dynamic_net(hidden_state,action)
+        reward,latent_state = self.dynamic_net(hidden_state,action.unsqueeze(0))
         policy,value = self.prediction_net(latent_state)
         
         def init_weights(layers):
@@ -369,7 +369,7 @@ class main:
                         hidden_rep = self.representation_net(obs) 
                         u_reward,u_value,u_policy = [],[],[]
                         for i in range(self.main_hypers.k):
-                            r,s = self.dynamic_net(hidden_rep[i].unsqueeze(0),action[i])
+                            r,s = self.dynamic_net(hidden_rep,action.squeeze())
                             p,v = self.prediction_net(s)
 
                             u_reward.append(r)
@@ -382,7 +382,7 @@ class main:
                         
                         total_loss = F.mse_loss(u_reward,reward).mean()
                         total_loss += F.mse_loss(u_value,value_target).mean()
-                        total_loss += F.mse_loss(u_policy,pi.squeeze()).mean()
+                        # total_loss += F.mse_loss(u_policy,pi.squeeze()).mean() fix
                         total_loss += self.main_hypers.l2_coeff * self.l2()
                     
                         total_loss = torch.tensor([0.0],requires_grad=True)
