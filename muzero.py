@@ -140,8 +140,8 @@ class node:
         return len(self.childs) > 0
 
 class mcts:
-    def __init__(self,networks:list,mrv):
-        self.mcts_hypers = mcts_hypers()
+    def __init__(self,networks:list,mrv,hypers):
+        self.mcts_hypers = hypers
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.mrv = mrv
         self.cat_action = lambda cell,value : torch.cat([cell,value])
@@ -312,6 +312,7 @@ class main:
 
     def __init__(self):
         self.main_hypers = main_hypers()
+        self.mcts_hypers = mcts_hypers()
         self.env = env(self.main_hypers.env_horizon)
 
         self.__init_nets()
@@ -326,7 +327,8 @@ class main:
         self.mrv = mrv # Unitialized instance of the mrv class
         self.mcts = mcts(
                 (self.representation_net,self.dynamic_net,self.prediction_net),
-                self.mrv
+                self.mrv,
+                self.mcts_hypers
         ) 
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
         self.l2 = l2_regularization(self.representation_net,self.dynamic_net,self.prediction_net)
@@ -356,8 +358,7 @@ class main:
             mlflow.set_experiment("Muzero")
             
             with mlflow.start_run() as run:
-                mlflow.log_params(asdict(self.main_hypers))
-                mlflow.log_params(asdict(self.replay_buffer.hypers))
+                mlflow.log_params((asdict(self.main_hypers) | asdict(self.mcts_hypers)))
 
                 for _ in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
                     self.replay_buffer.step()
@@ -379,9 +380,9 @@ class main:
                         u_value = torch.stack(u_value).squeeze(-1)
                         u_policy = torch.stack(u_policy).squeeze()
                         
-                        total_loss = (u_reward.T @ reward.log()).mean()
-                        total_loss += (u_value.T @ value_target.log()).mean()
-                        total_loss += (u_policy.T @ pi.squeeze()).mean()
+                        total_loss = F.mse_loss(u_reward,reward).mean()
+                        total_loss += F.mse_loss(u_value,value_target).mean()
+                        total_loss += F.mse_loss(u_policy,pi.squeeze()).mean()
                         total_loss += self.main_hypers.l2_coeff * self.l2()
                     
                         total_loss = torch.tensor([0.0],requires_grad=True)
