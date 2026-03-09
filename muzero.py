@@ -14,11 +14,13 @@ from itertools import chain
 @dataclass(frozen=False)
 class main_hypers:
     device = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
-    max_step = 1_000
+    max_steps = 1_000
+    warmup = 400
     env_horizon = 400
     batch_size = 800
     mini_batch = 40
     lr = 0.001
+    k = 5
 
 @dataclass(frozen=False)
 class mcts_hypers:
@@ -59,7 +61,6 @@ class representation_net(nn.Module): # h : state -> s^0
         x = self.conv4(x) # [1,32,9,9]
         return x
 
-
 class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
     def __init__(self):
         super().__init__()
@@ -79,7 +80,6 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         n = self.l2(n)
         reward = self.l3(n)
         return reward,latent_state
-
 
 class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     def __init__(self):
@@ -226,25 +226,28 @@ class replay_buffer:
         self.pointer = 0
 
     def step(self):
-        trunc = done = False
+        trunc = done = False   # TODO : Fix 
         with torch.no_grad():
-            mcts_pi,mcts_action,mcts_value,target_cell,_ = self.mcts.search(self.obs,trunc)
-            action = np.append(target_cell.numpy(),mcts_action)
-            state,reward,done,trunc,info = self.env.step(action)
+            for n in range(self.hypers.batch_size):
+                mcts_pi,mcts_action,mcts_value,target_cell,_ = self.mcts.search(self.obs,trunc)
+                action = np.append(target_cell.numpy(),mcts_action)
+                state,reward,done,trunc,info = self.env.step(action)
 
-            self.mcts_pi[n].copy_(mcts_pi)
-            self.env_obs[n].copy_(torch.as_tensor(self.obs))
-            self.mcts_value[n].copy_(mcts_value)
-            self.mcts_action[n].copy_(torch.as_tensor(action))
-            self.env_reward[n].copy_(reward)
-            self.env_trunc[n].copy_(trunc)
+                self.mcts_pi[n].copy_(mcts_pi)
+                self.env_obs[n].copy_(torch.as_tensor(self.obs))
+                self.mcts_value[n].copy_(mcts_value)
+                self.mcts_action[n].copy_(torch.as_tensor(action))
+                self.env_reward[n].copy_(reward)
+                self.env_trunc[n].copy_(trunc)
 
-            if trunc: 
-                self.obs = self.env.reset()[0]
-            else: 
-                self.obs = state
+                if trunc: 
+                    self.obs = self.env.reset()[0]
+                else: 
+                    self.obs = state
 
-            self.pointer += 1
+                self.pointer += 1
+
+            self.compute_value_target()
             
     def compute_value_target(self):
         self.value_target = torch.empty(*self.mcts_value.shape,device=self.hypers.device)
@@ -255,13 +258,15 @@ class replay_buffer:
                 (self.env_reward[n:].squeeze() * gamma[n:] * mask[n:].squeeze()) + self.mcts_value[n]
             ).sum()
         
-    def sample(self): # -> obs,action,reward,mcts_value,value_target
-        idx = torch.randperm(self.hypers.batch_size)
-        s_obs = self.env_obs[idx]
-        s_action = self.mcts_action[idx]
-        s_reward = self.env_reward[idx]
-        s_value = self.mcts_value[idx]
-        s_value_target = self.self.value_target[idx]
+    def sample(self): 
+        start = torch.randint(0,self.hypers.env_horizon - self.hypers.k,(1,))  
+        end = start + self.hypers.k
+        
+        s_obs = self.env_obs[start:end]                   # Observation
+        s_action = self.mcts_action[start:end]            # Action
+        s_reward = self.env_reward[start:end]             # Reward
+        s_value = self.mcts_value[start:end]              # Mcts Value
+        s_value_target = self.value_target[start:end]     # Value Target
         return s_obs,s_action,s_reward,s_value,s_value_target
 
 
@@ -291,7 +296,7 @@ class main:
         self.prediction_net = prediction_net()
     
         init_state = torch.empty((1,11,9,9),device=None)
-        action = torch.as_tensor(self.env.action_space.sample(),device=None) 
+        action = torch.as_tensor(self.env.action_space.sample(),device=None)
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action)
@@ -347,36 +352,36 @@ class main:
             for _ in range(self.main_hypers.max_steps):
                 self.replay_buffer.step()
 
-                obs,action,env_reward_rewards,mcts_value = self.replay_buffer.sample()
+                if self.replay_buffer.pointer >= self.main_hypers.warmup:
+                    obs,action,reward,mcts_value,value_target = self.replay_buffer.sample()
 
-                # s0 = self.representation_net(obs)
-                s = torch.empty((400,1),device=None)
-                target_rewards = torch.empty((400,1),device=None)
-                for _ in range(10):
-                    # g(s0,at+1) -> s^1,r^1
-                    # g(s^1,at+2) -> s^2,r^2
-                    # ...
-                    pass
-                
-                p = torch.empty((400,1),device=None)
-                v = torch.empty((400,1),device=None)
-                for _ in range(10):
-                    # f(s^1) -> p^1,v^1
-                    # f(s^2) -> p^2,v^2
-                    # ...
-                    pass
-                
-                #total_loss = loss_reward(env_rewards,target_rewards)
-                #total_loss += loss_value(mcts_value,target_value)
-                #total_loss += loss_policy(pi,prediction)
-                #total_loss += c * self.l2()
-                
-                total_loss = torch.tensor([0.0],requires_grad=True) # loss_reward + loss_policy + loss_value + l2
-                self.optim.zero_grad(set_to_none=True)
-                total_loss.backward()
-                self.optim.step()
+                    hidden_rep = self.representation_net(obs)
+         
+                    u_reward,u_value,u_policy = [],[],[]
 
-                #TODO: log data
+                    for i in range(self.main_hypers.k):
+                        r,s = self.dynamic_net(hidden_rep[i].unsqueeze(0),action[i])
+                        p,v = self.prediction_net(s)
+
+                        u_reward.append(r)
+                        u_value.append(v)
+                        u_policy.append(p)
+                     
+                    u_reward = torch.stack(u_reward).squeeze(-1)
+                    u_value = torch.stack(u_value).squeeze(-1)
+                    u_policy = torch.stack(u_policy).squeeze()
+
+                    #total_loss = loss_reward(env_rewards,target_rewards)
+                    #total_loss += loss_value(mcts_value,target_value)
+                    #total_loss += loss_policy(pi,prediction)
+                    #total_loss += c * self.l2()
+                    
+                    total_loss = torch.tensor([0.0],requires_grad=True) # loss_r+ loss_po+ loss_value + l2
+                    self.optim.zero_grad(set_to_none=True)
+                    total_loss.backward()
+                    self.optim.step()
+
+                    #TODO: log data
             
 
 if __name__ == "__main__":
