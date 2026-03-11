@@ -55,7 +55,7 @@ class representation_net(nn.Module): # h : state -> s^0
         self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
         self.conv4 = nn.LazyConv2d(32,3,1,1) # 256
 
-    def forward(self,x): 
+    def forward(self,x):
         x = torch.einsum("nbrc,bo->norc",x,self.input_emb) 
         x = self.conv1(x)
         x = self.conv2(x)
@@ -149,7 +149,6 @@ class mcts:
     def search(self,observation,env_trunc):
         _mrv = self.mrv(observation)
         target_cell = _mrv.sample_cell(env_trunc)
-   
         hidden_state = self.rep_net(process_obs(observation))
         policy,value = self.pred_net(hidden_state)
 
@@ -216,7 +215,7 @@ class replay_buffer:
         self.mcts_action = torch.empty((self.hypers.batch_size,1,3),device=self.hypers.device)
         #
         self.env_reward = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
-        self.env_obs = torch.empty((self.hypers.batch_size,1,9,9),device=self.hypers.device,dtype=torch.half)
+        self.env_obs = torch.empty((self.hypers.batch_size,1,11,9,9),device=self.hypers.device,dtype=torch.half)
         self.env_trunc = torch.empty((self.hypers.batch_size,1),device=self.hypers.device,dtype=torch.bool)
 
     def __init__(self,env,mcts,hypers):
@@ -236,7 +235,7 @@ class replay_buffer:
                 state,reward,done,trunc,info = self.env.step(action)
 
                 self.mcts_pi[n].copy_(mcts_pi)
-                self.env_obs[n].copy_(torch.as_tensor(self.obs))
+                self.env_obs[n].copy_(process_obs(torch.as_tensor(self.obs)))
                 self.mcts_value[n].copy_(mcts_value)
                 self.mcts_action[n].copy_(torch.as_tensor(action))
                 self.env_reward[n].copy_(reward)
@@ -260,17 +259,24 @@ class replay_buffer:
                 (self.env_reward[n:].squeeze() * gamma[n:] * mask[n:].squeeze()) + self.mcts_value[n]
             ).sum()
         
-    def sample(self): 
-        start = torch.randint(0,self.hypers.env_horizon - self.hypers.k,(1,))  
-        end = start + self.hypers.k
+    def sample(self):
+        M = 32
+        k = 5
+
+        start = torch.randint(0,self.hypers.env_horizon - k,(M,))  
+        idx = start.unsqueeze(-1) + torch.arange(k)
         
-        s_obs = self.env_obs[start:end]                   # Observation
-        s_pi = self.mcts_pi[start:end]                    # Pi
-        s_action = self.mcts_action[start:end]            # Action
-        s_reward = self.env_reward[start:end]             # Reward
-        s_value = self.mcts_value[start:end]              # Mcts Value
-        s_value_target = self.value_target[start:end]     # Value Target
-        return s_obs,s_pi,s_action,s_reward,s_value,s_value_target
+        s_obs = self.env_obs[idx].flatten(0,1) # Observation
+        s_pi = self.mcts_pi[idx].flatten(0,1)                    # Pi
+        s_action = self.mcts_action[idx].flatten(0,1)         # Action
+        s_reward = self.env_reward[idx].flatten(0,1)             # Reward
+        s_value = self.mcts_value[idx].flatten(0,1)              # Mcts Value
+        s_value_target = self.value_target[idx].flatten(0,1)    # Value Target
+         
+        #print(s_obs.shape,s_pi.shape,s_action.shape,s_reward.shape,s_value.shape,s_value_target.shape)
+
+        #sys.exit(s_obs[:,1].shape)
+        return map(torch.squeeze,(s_obs,s_pi,s_action,s_reward,s_value,s_value_target))
 
 
 class l2_regularization():
@@ -333,14 +339,14 @@ class main:
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
         self.l2 = l2_regularization(self.representation_net,self.dynamic_net,self.prediction_net)
         
-    def save(self):
+    def save(self,n):
         obj = {
             "representation_net_state":self.representation_net.state_dict(),                
             "dynamic_net_state":self.dynamic_net.state_dict(),
             "prediction_net_state":self.prediction_net.state_dict(),
             "optim_state":self.optim.state_dict()
         }
-        torch.save(obj,"functions_states")
+        torch.save(obj,f"./functions_states-{n}.pth")
 
     def load(self,path):
         obj = torch.load(path)
@@ -360,22 +366,24 @@ class main:
             with mlflow.start_run() as run:
                 mlflow.log_params((asdict(self.main_hypers) | asdict(self.mcts_hypers)))
 
-                for _ in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
+                for n in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
                     self.replay_buffer.step()
 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
-
-                        hidden_rep = self.representation_net(obs) 
+                    
+                        hidden_rep = self.representation_net(obs.float())
                         u_reward,u_value,u_policy = [],[],[]
                         for i in range(self.main_hypers.k):
-                            r,s = self.dynamic_net(hidden_rep,action.squeeze())
+                            r,s = self.dynamic_net(hidden_rep,action[:,i].unsqueeze(-1))
                             p,v = self.prediction_net(s)
 
                             u_reward.append(r)
                             u_value.append(v)
                             u_policy.append(p)
-                         
+
+                            hidden_rep = s # update s after each loop u_reward
+                
                         u_reward = torch.stack(u_reward).squeeze(-1)
                         u_value = torch.stack(u_value).squeeze(-1)
                         u_policy = torch.stack(u_policy).squeeze()
@@ -384,13 +392,19 @@ class main:
                         total_loss += F.mse_loss(u_value,value_target).mean()
                         # total_loss += F.mse_loss(u_policy,pi.squeeze()).mean() fix
                         total_loss += self.main_hypers.l2_coeff * self.l2()
+                        sys.exit()
                     
                         total_loss = torch.tensor([0.0],requires_grad=True)
                         self.optim.zero_grad(set_to_none=True)
                         total_loss.backward()
                         self.optim.step()
 
-                        #TODO: log data
+                        mlflow.log_metrics(
+                            {
+                            "_loss": 0.0,
+                            "__": 0.0
+                            }
+                        )
                 
                 
 
