@@ -151,6 +151,7 @@ class mcts:
         target_cell = _mrv.sample_cell(env_trunc)
         hidden_state = self.rep_net(process_obs(observation))
         policy,value = self.pred_net(hidden_state)
+        #sys.exit(policy.shape)
 
         root = node(0) ; root.state = hidden_state ; depth = 0
 
@@ -189,13 +190,15 @@ class mcts:
                 nod.visit_count += 1
                 nod.mean_value += value_n
                 value_n = nod.reward + self.mcts_hypers.gamma * value_n
+             
+        pi = torch.tensor([v.visit_count for v in root.childs.values()]) 
+        pi /= pi.sum()
+        
+        action = max(root.childs.keys(),key=lambda a: root.childs[a].visit_count)
+        value = root.childs[action].mean_value
+        return pi,action,value.squeeze(),target_cell,depth
     
-        pi = torch.rand((1,9))
-        a = max(root.childs.keys(),key=lambda a: root.childs[a].visit_count)
-        v = root.childs[a].mean_value
-        return pi,a,v.squeeze(),target_cell,depth
-    
-    def ucb(self,parent):
+    def ucb(self,parent): # TODO Update
         scores = {}
         c1 = self.mcts_hypers.c1  ; c2 = self.mcts_hypers.c2 
 
@@ -382,14 +385,12 @@ class main:
                         
                         u_reward = torch.stack(u_reward).squeeze().permute(-1,0)
                         u_value = torch.stack(u_value).squeeze().permute(-1,0)
-                        #u_policy = torch.stack(u_policy)#.squeeze()
+                        u_policy = torch.stack(u_policy).permute(1,0,-1) 
                    
                         loss_r = F.mse_loss(u_reward,reward).mean()
                         loss_v = F.mse_loss(u_value,value_target).mean()
-                        sys.exit(total_loss)
-                        # total_loss += F.mse_loss(u_policy,pi.squeeze()).mean() fix
-                        total_loss += self.main_hypers.l2_coeff * self.l2()
-                        sys.exit()
+                        loss_p = -(u_policy * pi.log()).sum(-1).mean()
+                        total_loss = loss_r + loss_v + loss_p + (self.main_hypers.l2_coeff * self.l2())
                     
                         total_loss = torch.tensor([0.0],requires_grad=True)
                         self.optim.zero_grad(set_to_none=True)
@@ -400,7 +401,7 @@ class main:
                             {
                             "loss reward":loss_r,
                             "loss value":loss_v,
-                            "loss policy":0.0,
+                            "loss policy":loss_p,
                             "total loss": total_loss
                             }
                         )
