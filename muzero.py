@@ -253,7 +253,7 @@ class replay_buffer:
     def compute_value_target(self):
         self.value_target = torch.empty(*self.mcts_value.shape,device=self.hypers.device)
         gamma = torch.pow(torch.full((self.hypers.batch_size,),0.2),torch.arange(self.hypers.batch_size))
-        mask = (1 - self.env_trunc.float()).cumprod(0) # Update 
+        mask = (1 - self.env_trunc.float()).cumprod(0) # TODO  Update 
         for n in range(self.hypers.batch_size):                
             self.value_target[n] = (
                 (self.env_reward[n:].squeeze() * gamma[n:] * mask[n:].squeeze()) + self.mcts_value[n]
@@ -266,16 +266,12 @@ class replay_buffer:
         start = torch.randint(0,self.hypers.env_horizon - k,(M,))  
         idx = start.unsqueeze(-1) + torch.arange(k)
         
-        s_obs = self.env_obs[idx].flatten(0,1) # Observation
-        s_pi = self.mcts_pi[idx].flatten(0,1)                    # Pi
-        s_action = self.mcts_action[idx].flatten(0,1)         # Action
-        s_reward = self.env_reward[idx].flatten(0,1)             # Reward
-        s_value = self.mcts_value[idx].flatten(0,1)              # Mcts Value
-        s_value_target = self.value_target[idx].flatten(0,1)    # Value Target
-         
-        #print(s_obs.shape,s_pi.shape,s_action.shape,s_reward.shape,s_value.shape,s_value_target.shape)
-
-        #sys.exit(s_obs[:,1].shape)
+        s_obs = self.env_obs[idx]                   # Observation
+        s_pi = self.mcts_pi[idx]                    # Pi
+        s_action = self.mcts_action[idx]            # Action
+        s_reward = self.env_reward[idx]             # Reward
+        s_value = self.mcts_value[idx]              # Mcts Value
+        s_value_target = self.value_target[idx]     # Value Target
         return map(torch.squeeze,(s_obs,s_pi,s_action,s_reward,s_value,s_value_target))
 
 
@@ -371,11 +367,11 @@ class main:
 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
-                    
-                        hidden_rep = self.representation_net(obs.float())
+ 
+                        hidden_rep = self.representation_net(obs[:,0].float())
                         u_reward,u_value,u_policy = [],[],[]
                         for i in range(self.main_hypers.k):
-                            r,s = self.dynamic_net(hidden_rep,action[:,i].unsqueeze(-1))
+                            r,s = self.dynamic_net(hidden_rep,action[:,i])
                             p,v = self.prediction_net(s)
 
                             u_reward.append(r)
@@ -383,13 +379,14 @@ class main:
                             u_policy.append(p)
 
                             hidden_rep = s # update s after each loop u_reward
-                
-                        u_reward = torch.stack(u_reward).squeeze(-1)
-                        u_value = torch.stack(u_value).squeeze(-1)
-                        u_policy = torch.stack(u_policy).squeeze()
                         
-                        total_loss = F.mse_loss(u_reward,reward).mean()
-                        total_loss += F.mse_loss(u_value,value_target).mean()
+                        u_reward = torch.stack(u_reward).squeeze().permute(-1,0)
+                        u_value = torch.stack(u_value).squeeze().permute(-1,0)
+                        #u_policy = torch.stack(u_policy)#.squeeze()
+                   
+                        loss_r = F.mse_loss(u_reward,reward).mean()
+                        loss_v = F.mse_loss(u_value,value_target).mean()
+                        sys.exit(total_loss)
                         # total_loss += F.mse_loss(u_policy,pi.squeeze()).mean() fix
                         total_loss += self.main_hypers.l2_coeff * self.l2()
                         sys.exit()
@@ -401,15 +398,14 @@ class main:
 
                         mlflow.log_metrics(
                             {
-                            "_loss": 0.0,
-                            "__": 0.0
+                            "loss reward":loss_r,
+                            "loss value":loss_v,
+                            "loss policy":0.0,
+                            "total loss": total_loss
                             }
                         )
                 
                 
-
-            
-
 if __name__ == "__main__":
     main().run(start=True)
     #mrv(env().reset()[0])
