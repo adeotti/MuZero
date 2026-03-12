@@ -314,6 +314,7 @@ class main:
             pass
 
         # TODO : init weights and compile nets
+        # self.representation_net.compile() ; self.dynamic_net.compile() ; self.prediction_net.compile()
 
     def __init__(self):
         self.main_hypers = main_hypers()
@@ -389,7 +390,7 @@ class main:
                    
                         loss_r = F.mse_loss(u_reward,reward).mean()
                         loss_v = F.mse_loss(u_value,value_target).mean()
-                        loss_p = -(u_policy * pi.log()).sum(-1).mean()
+                        loss_p = -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
                         total_loss = loss_r + loss_v + loss_p + (self.main_hypers.l2_coeff * self.l2())
                     
                         total_loss = torch.tensor([0.0],requires_grad=True)
