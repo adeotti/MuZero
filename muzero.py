@@ -151,7 +151,6 @@ class mcts:
         target_cell = _mrv.sample_cell(env_trunc)
         hidden_state = self.rep_net(process_obs(observation))
         policy,value = self.pred_net(hidden_state)
-        #sys.exit(policy.shape)
 
         root = node(0) ; root.state = hidden_state ; depth = 0
 
@@ -186,7 +185,7 @@ class mcts:
             for n, p in enumerate(policy_n.squeeze()): # create childs
                 path[-1].childs[n+1] = node(p.item())        
          
-            for nod in reversed(path): # backpropagation
+            for nod in reversed(path): # backpropagation, TODO : check and update code 
                 nod.visit_count += 1
                 nod.mean_value += value_n
                 value_n = nod.reward + self.mcts_hypers.gamma * value_n
@@ -198,14 +197,14 @@ class mcts:
         value = root.childs[action].mean_value
         return pi,action,value.squeeze(),target_cell,depth
     
-    def ucb(self,parent): # TODO Update
+    def ucb(self,parent): 
         scores = {}
         c1 = self.mcts_hypers.c1  ; c2 = self.mcts_hypers.c2 
 
         for action,child in parent.childs.items():
-            x = (child.mean_value + child.prior)
-            x *= (math.sqrt(parent.visit_count)) / (1 + child.visit_count)
-            x *= c1 + math.log((parent.visit_count + c2 + 1) / c2)  
+            x = child.prior
+            x *= math.sqrt(parent.visit_count) / (1 + child.visit_count)
+            x *= c1 + math.log((parent.visit_count + c2 + 1) / c2)
             scores[action] = child.mean_value + x
         a = max(scores,key=scores.get)
         return a
@@ -326,8 +325,7 @@ class main:
                 chain(
                     self.representation_net.parameters(),
                     self.dynamic_net.parameters(),
-                    self.prediction_net.parameters()
-                ),
+                    gelf.prediction_net.parameters()),
                 lr = self.main_hypers.lr
         )
         self.mrv = mrv # Unitialized instance of the mrv class
@@ -392,8 +390,7 @@ class main:
                         loss_v = F.mse_loss(u_value,value_target).mean()
                         loss_p = -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
                         total_loss = loss_r + loss_v + loss_p + (self.main_hypers.l2_coeff * self.l2())
-                    
-                        total_loss = torch.tensor([0.0],requires_grad=True)
+                     
                         self.optim.zero_grad(set_to_none=True)
                         total_loss.backward()
                         self.optim.step()
