@@ -4,10 +4,12 @@ import torch.nn.functional as F
 import gymnasium as gym
 import numpy as np
 
+from torch import Tensor
 from torch.distributions import Categorical,Dirichlet
 from torch.optim import Adam
 from dataclasses import dataclass,asdict
 from torch.utils.tensorboard import SummaryWriter
+
 from itertools import chain
 from tqdm import tqdm
 
@@ -107,14 +109,13 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     
 
 class mrv: # Cell sampling with Minimum Remaining value
-    def __init__(self,state):
-        # Compute the minimum required value once at the start of an horizon and cache the data then just keep
-        # sampling min(mrv cell) until env is done or trunc then recompute the entire mrv and cache and loop
-        #self.state = torch.as_tensor(state[0]).unsqueeze(1).expand(9,9,9)
-        #self.target = torch.arange(1,10).repeat(81).reshape(9,9,9)
-        pass
+    def __init__(self,state): 
+        self.state = torch.as_tensor(state)
+        idx = (self.state == 0).nonzero()
+        domain = torch.arange(1,10).repeat(idx.size(0),1)
+        dic = torch.cat([idx,domain],-1) # -> column[1-2] = indice , column[3-11] = domain
 
-    def get_domains(self,state):
+    def get_region(self,state:Tensor=None):
         pass
 
     def sample_cell(self,env_trunc):
@@ -412,6 +413,11 @@ class main:
                         )
                  
 if __name__ == "__main__":
-    main().run(start=True)
-    #mrv(env().reset()[0])
-    #print(n_step_return(torch.tensor([2,4,2,4])))
+    seed = 42
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    #main().run(start=True)
+    state = torch.as_tensor(env().reset()[0]) 
+    mrv(state).get_region()
