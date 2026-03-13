@@ -309,11 +309,18 @@ class main:
         reward,latent_state = self.dynamic_net(hidden_state,action.unsqueeze(0))
         policy,value = self.prediction_net(latent_state)
         
-        def init_weights(layers):
-            pass
+        def init_w(layer):
+            if isinstance(layer,(nn.Linear,nn.Conv2d)):
+                nn.init.orthogonal_(layer.weight)
+                layer.bias.data.fill_(0.0)
 
-        # TODO : init weights and compile nets
-        # self.representation_net.compile() ; self.dynamic_net.compile() ; self.prediction_net.compile()
+        self.representation_net.apply(init_w) 
+        self.dynamic_net.apply(init_w) 
+        self.prediction_net.apply(init_w)
+
+        # self.representation_net.compile() 
+        # self.dynamic_net.compile() 
+        # self.prediction_net.compile()
 
     def __init__(self):
         self.main_hypers = main_hypers()
@@ -325,7 +332,7 @@ class main:
                 chain(
                     self.representation_net.parameters(),
                     self.dynamic_net.parameters(),
-                    gelf.prediction_net.parameters()),
+                    self.prediction_net.parameters()),
                 lr = self.main_hypers.lr
         )
         self.mrv = mrv # Unitialized instance of the mrv class
@@ -403,8 +410,7 @@ class main:
                             "total loss": total_loss
                             }
                         )
-                
-                
+                 
 if __name__ == "__main__":
     main().run(start=True)
     #mrv(env().reset()[0])
