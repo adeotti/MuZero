@@ -108,12 +108,14 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         return policy,value
     
 
-class mrv: # Cell sampling with Minimum Remaining value
+class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
     def __init__(self,state): 
         self.state = torch.as_tensor(state)
         self.idx = (self.state == 0).nonzero()
         self.domain = torch.arange(1,10).repeat(self.idx.size(0),1)
         self.dic = torch.cat([self.idx,self.domain],-1) # -> column[1-2] = indice , column[3-11] = domain
+        self.update_domain()
+        self.mini_value_tensor = self.get_minimum_value()
 
     def get_region(self,idx):
         row,col = idx
@@ -123,8 +125,7 @@ class mrv: # Cell sampling with Minimum Remaining value
 
         block_idx = (row // 3) * 3 + (col // 3)
         block = self.state.reshape(3,3,3,3).permute(0,2,1,3).reshape(9,9)[block_idx].tolist()
-        block_row = row % 3
-        block_col = col % 3
+        block_row = row % 3 ; block_col = col % 3
         cell_idx = block_row * 3 + block_col
         block.pop(cell_idx)
         
@@ -145,13 +146,23 @@ class mrv: # Cell sampling with Minimum Remaining value
 
             tensor[2:] = domain # update domain 
 
-    def sample_cell(self,env_trunc):
+    def get_minimum_value(self):
+        value_tensor = torch.empty(self.dic.size(0)).long()
+        for i,tensor in enumerate(self.dic):
+            domain = tensor[2:]
+            value = (domain > 0).sum()
+            value_tensor[i] = value
+        
+        return value_tensor
+
+    def sample_cell(self,env_trunc=False):
         if env_trunc:
             # TODO : recompute mrv entirely for the new state
             pass
         else:
             # sample min(mrv cell) from cached data
-            pass
+            sample_idx = self.mini_value_tensor.argmin()
+            print(sample_idx)
         return torch.randint(0,9,(2,))
 
 
@@ -447,4 +458,4 @@ if __name__ == "__main__":
 
     #main().run(start=True)
     state = torch.as_tensor(env().reset()[0]) 
-    mrv(state).update_domain()
+    mrv(state).get_minimum_value()
