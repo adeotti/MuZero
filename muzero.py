@@ -112,8 +112,8 @@ class mrv: # Cell sampling with Minimum Remaining value
     def __init__(self,state): 
         self.state = torch.as_tensor(state)
         self.idx = (self.state == 0).nonzero()
-        domain = torch.arange(1,10).repeat(self.idx.size(0),1)
-        dic = torch.cat([self.idx,domain],-1) # -> column[1-2] = indice , column[3-11] = domain
+        self.domain = torch.arange(1,10).repeat(self.idx.size(0),1)
+        self.dic = torch.cat([self.idx,self.domain],-1) # -> column[1-2] = indice , column[3-11] = domain
 
     def get_region(self,idx):
         row,col = idx
@@ -129,8 +129,21 @@ class mrv: # Cell sampling with Minimum Remaining value
         block.pop(cell_idx)
         
         region = torch.tensor([x_list + y_list + block]).unique().nonzero().squeeze()
-        return region 
-        
+        return region
+
+    def update_domain(self):
+        for tensor in self.dic:
+            idx = tensor[:2]
+            domain = tensor[2:]
+            region = self.get_region(idx)
+
+            filler = torch.full((domain.size(0) - region.size(0),),0)
+            region = torch.cat([region,filler])
+            assert domain.shape == region.shape
+            domain_mask = (region == domain)
+            domain = torch.masked_fill(domain,domain_mask,-1)
+
+            tensor[2:] = domain # update domain 
 
     def sample_cell(self,env_trunc):
         if env_trunc:
@@ -434,4 +447,4 @@ if __name__ == "__main__":
 
     #main().run(start=True)
     state = torch.as_tensor(env().reset()[0]) 
-    mrv(state).get_region()
+    mrv(state).update_domain()
