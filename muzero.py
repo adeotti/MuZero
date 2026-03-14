@@ -157,16 +157,10 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
         value_tensor = (value_tensor == min_val).nonzero()    
         return value_tensor.squeeze().tolist()
 
-    def sample_cell(self,env_trunc=False):
-        if env_trunc:
-            # TODO : recompute mrv entirely for the new state
-            pass
-        else:
-            # sample min(mrv cell) from cached data
+    def sample_cell(self):
             sample_idx = random.choices(self.mini_value_list)
-            sys.exit(sample_idx)
-            
-        return torch.randint(0,9,(2,))
+            cell = self.dic[:,:2][sample_idx]
+        return cell.squeeze().tolist()
 
 
 class node:
