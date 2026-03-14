@@ -111,12 +111,26 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
 class mrv: # Cell sampling with Minimum Remaining value
     def __init__(self,state): 
         self.state = torch.as_tensor(state)
-        idx = (self.state == 0).nonzero()
-        domain = torch.arange(1,10).repeat(idx.size(0),1)
-        dic = torch.cat([idx,domain],-1) # -> column[1-2] = indice , column[3-11] = domain
+        self.idx = (self.state == 0).nonzero()
+        domain = torch.arange(1,10).repeat(self.idx.size(0),1)
+        dic = torch.cat([self.idx,domain],-1) # -> column[1-2] = indice , column[3-11] = domain
 
-    def get_region(self,state:Tensor=None):
-        pass
+    def get_region(self,idx):
+        row,col = idx
+
+        x_list = self.state[row].tolist()   ; x_list.pop(row)
+        y_list = self.state[:,col].tolist() ; y_list.pop(col)
+
+        block_idx = (row // 3) * 3 + (col // 3)
+        block = self.state.reshape(3,3,3,3).permute(0,2,1,3).reshape(9,9)[block_idx].tolist()
+        block_row = row % 3
+        block_col = col % 3
+        cell_idx = block_row * 3 + block_col
+        block.pop(cell_idx)
+        
+        region = torch.tensor([x_list + y_list + block]).unique().nonzero().squeeze()
+        return region 
+        
 
     def sample_cell(self,env_trunc):
         if env_trunc:
