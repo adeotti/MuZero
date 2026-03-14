@@ -115,7 +115,7 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
         self.domain = torch.arange(1,10).repeat(self.idx.size(0),1)
         self.dic = torch.cat([self.idx,self.domain],-1) # -> column[1-2] = indice , column[3-11] = domain
         self.update_domain()
-        self.mini_value_tensor = self.get_minimum_value()
+        self.mini_value_list = self.get_minimum_value()
 
     def get_region(self,idx):
         row,col = idx
@@ -152,8 +152,10 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
             domain = tensor[2:]
             value = (domain > 0).sum()
             value_tensor[i] = value
-        
-        return value_tensor
+
+        min_val = value_tensor.min()
+        value_tensor = (value_tensor == min_val).nonzero()    
+        return value_tensor.squeeze().tolist()
 
     def sample_cell(self,env_trunc=False):
         if env_trunc:
@@ -161,8 +163,9 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
             pass
         else:
             # sample min(mrv cell) from cached data
-            sample_idx = self.mini_value_tensor.argmin()
-            print(sample_idx)
+            sample_idx = random.choices(self.mini_value_list)
+            sys.exit(sample_idx)
+            
         return torch.randint(0,9,(2,))
 
 
@@ -458,4 +461,4 @@ if __name__ == "__main__":
 
     #main().run(start=True)
     state = torch.as_tensor(env().reset()[0]) 
-    mrv(state).get_minimum_value()
+    mrv(state).sample_cell()
