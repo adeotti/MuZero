@@ -19,7 +19,7 @@ class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     max_steps: int = 1_000
     warmup: int = 400
-    env_horizon: int = 400
+    env_horizon: int = 500
     batch_size: int = 800
     mini_batch: int = 40
     lr: int = 0.001
@@ -38,7 +38,7 @@ class mcts_hypers:
 
 
 def env(horizon=None):
-    x = gym.make("sudoku-v1",mode="easy",horizon=horizon)
+    x = gym.make("sudoku-v1",mode="easy",horizon=horizon,render_mode="human")
     return x
 
 def process_obs(x): # -> one hot encoding + mask
@@ -109,13 +109,12 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     
 
 class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
-    def __init__(self,state): 
+    def __init__(self,state,idx): 
         self.state = torch.as_tensor(state)
-        self.idx = (self.state == 0).nonzero()
+        self.idx = idx 
         self.domain = torch.arange(1,10).repeat(self.idx.size(0),1)
         self.dic = torch.cat([self.idx,self.domain],-1) # -> column[1-2] = indice , column[3-11] = domain
-        self.update_domain()
-        self.mini_value_list = self.get_minimum_value()
+        
 
     def get_region(self,idx):
         row,col = idx
@@ -151,16 +150,24 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
         for i,tensor in enumerate(self.dic):
             domain = tensor[2:]
             value = (domain > 0).sum()
-            value_tensor[i] = value
+            value_tensor[i] = value  
+        return value_tensor.squeeze()
 
-        min_val = value_tensor.min()
-        value_tensor = (value_tensor == min_val).nonzero()    
-        return value_tensor.squeeze().tolist()
-
-    def sample_cell(self):
-            sample_idx = random.choices(self.mini_value_list)
+    def sample_cell(self,env_trunc):
+        if env_trunc:
+            sys.exit("Sample cell env trunc") # TODO fix
+            state = self.state
+            self.__init__(state)
+            sample_idx = random.choices(self.get_minimum_value())
             cell = self.dic[:,:2][sample_idx]
-        return cell.squeeze().tolist()
+        else: 
+            self.update_domain()
+            vals = self.get_minimum_value()
+            min_vals = vals.min()
+            x = (vals == min_vals).nonzero()
+            sample_idx = random.choices(x)
+            cell = self.dic[:,:2][sample_idx]
+        return cell.squeeze()
 
 
 class node:
@@ -182,8 +189,8 @@ class mcts:
         self.mrv = mrv
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
-    def search(self,observation,env_trunc):
-        _mrv = self.mrv(observation)
+    def search(self,observation,env_trunc,idx):
+        _mrv = self.mrv(observation,idx)
         target_cell = _mrv.sample_cell(env_trunc)
         hidden_state = self.rep_net(process_obs(observation))
         policy,value = self.pred_net(hidden_state)
@@ -261,6 +268,7 @@ class replay_buffer:
         self.mcts = mcts
         self.hypers = hypers
         self.obs = self.env.reset()[0]
+        self.idx = (torch.as_tensor(self.obs) == 0).nonzero()
         self.init_buffer()
         self.pointer = 0
 
@@ -268,10 +276,11 @@ class replay_buffer:
         trunc = done = False   # TODO : Fix 
         with torch.no_grad():
             for n in range(self.hypers.batch_size):
-                mcts_pi,mcts_action,mcts_value,target_cell,_ = self.mcts.search(self.obs,trunc)
+                mcts_pi,mcts_action,mcts_value,target_cell,_ = self.mcts.search(self.obs,trunc,self.idx)
+                mcts_action = random.randint(1,9)  # TODO remove
                 action = np.append(target_cell.numpy(),mcts_action)
                 state,reward,done,trunc,info = self.env.step(action)
-
+                self.env.render() # TODO Remove
                 self.mcts_pi[n].copy_(mcts_pi)
                 self.env_obs[n].copy_(process_obs(torch.as_tensor(self.obs)))
                 self.mcts_value[n].copy_(mcts_value)
@@ -281,6 +290,7 @@ class replay_buffer:
 
                 if trunc: 
                     self.obs = self.env.reset()[0]
+                    self.idx = (self.obs == 0).nonzero()
                 else: 
                     self.obs = state
 
@@ -448,11 +458,11 @@ class main:
                         )
                  
 if __name__ == "__main__":
-    seed = 42
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+    #seed = 42
+    #torch.manual_seed(seed)
+    #np.random.seed(seed)
+    #random.seed(seed)
 
-    #main().run(start=True)
-    state = torch.as_tensor(env().reset()[0]) 
-    mrv(state).sample_cell()
+    main().run(start=True)
+    #state = torch.as_tensor(env().reset()[0]) 
+    #mrv(state).sample_cell()
