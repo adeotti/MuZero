@@ -19,7 +19,7 @@ class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     max_steps: int = 1_000
     warmup: int = 200
-    env_horizon: int = 400
+    env_horizon: int = 1000
     batch_size: int = 800
     mini_batch: int = 40
     lr: int = 0.001
@@ -28,7 +28,7 @@ class main_hypers:
 
 @dataclass(frozen=True)
 class mcts_hypers:
-    num_sim: int = 200
+    num_sim: int = 100
     max_depth: int = 400
     epsilon: int = 0.25 # dirichlet
     alpha_value: int = 0.3   
@@ -108,65 +108,6 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         return policy,value
     
 
-class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
-    def __init__(self,state,idx): 
-        self.state = torch.as_tensor(state)
-        self.idx = idx
-        self.domain = torch.arange(1,10).repeat(self.idx.size(0),1)
-        self.dic = torch.cat([self.idx,self.domain],-1) # -> column[1-2] = indice , column[3-11] = domain
-        
-    def get_region(self,idx):
-        row,col = idx
-
-        x_list = self.state[row].tolist()   
-        x_list.pop(col)
-
-        y_list = self.state[:,col].tolist()  
-        y_list.pop(row)
-
-        block_idx = (row // 3) * 3 + (col // 3)
-        block = self.state.reshape(3,3,3,3).permute(0,2,1,3).reshape(9,9)[block_idx].tolist()
-        block_row = row % 3 ; block_col = col % 3
-        cell_idx = block_row * 3 + block_col
-        block.pop(cell_idx)
-        
-        region = torch.tensor([x_list + y_list + block]).unique().squeeze()
-        region = region[region!=0]
-        return region
-
-    def update_domain(self):
-        for tensor in self.dic:
-            idx = tensor[:2]
-            domain = tensor[2:]
-            region = self.get_region(idx)
-
-            filler = torch.full((domain.size(0) - region.size(0),),0)
-            region = torch.cat([region,filler])
-            domain_mask = (region == domain)
-            domain = torch.masked_fill(domain,domain_mask,-1)
-
-            tensor[2:] = domain # update domain 
-
-    def get_minimum_value(self):
-        value_tensor = torch.empty(self.dic.size(0)).long()
-        for i,tensor in enumerate(self.dic):
-            domain = tensor[2:]
-            value = (domain > 0).sum()
-            value_tensor[i] = value  
-        return value_tensor.squeeze()
-
-    def sample_cell(self): 
-        self.update_domain()
-        vals = self.get_minimum_value()
-        min_vals = vals.min()
-        x = (vals == min_vals).nonzero()
-        sample_idx = random.choices(x)
-        cell = self.dic[:,:2][sample_idx]
-
-        sys.exit(cell)
-        return cell.squeeze()
-
-
 class node:
     def __init__(self,prior):
         self.prior = prior       # P(s,a)
@@ -180,15 +121,12 @@ class node:
         return len(self.childs) > 0
 
 class mcts:
-    def __init__(self,networks:list,mrv,hypers):
+    def __init__(self,networks:list,hypers):
         self.mcts_hypers = hypers
         self.rep_net,self.dyn_net,self.pred_net = networks
-        self.mrv = mrv
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
     def search(self,observation,idx):
-        _mrv = self.mrv(observation,idx)
-        target_cell = _mrv.sample_cell()
         hidden_state = self.rep_net(process_obs(observation))
         policy,value = self.pred_net(hidden_state)
 
@@ -276,7 +214,7 @@ class replay_buffer:
              
                 action = np.append(target_cell.numpy(),mcts_action)
                 state,reward,done,trunc,info = self.env.step(action)
-                
+                self.env.render() 
                 self.mcts_pi[n].copy_(mcts_pi)
                 self.env_obs[n].copy_(process_obs(torch.as_tensor(self.obs)))
                 self.mcts_value[n].copy_(mcts_value)
@@ -377,7 +315,6 @@ class main:
                     self.prediction_net.parameters()),
                 lr = self.main_hypers.lr
         )
-        self.mrv = mrv # Unitialized instance of the mrv class
         self.mcts = mcts(
                 (self.representation_net,self.dynamic_net,self.prediction_net),
                 self.mrv,
