@@ -18,8 +18,8 @@ from tqdm import tqdm
 class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     max_steps: int = 1_000
-    warmup: int = 400
-    env_horizon: int = 200
+    warmup: int = 200
+    env_horizon: int = 400
     batch_size: int = 800
     mini_batch: int = 40
     lr: int = 0.001
@@ -28,9 +28,9 @@ class main_hypers:
 
 @dataclass(frozen=True)
 class mcts_hypers:
-    num_sim: int = 5
-    max_depth: int = 1
-    epsilon: int = 0 # dirichlet
+    num_sim: int = 200
+    max_depth: int = 400
+    epsilon: int = 0.25 # dirichlet
     alpha_value: int = 0.3   
     c1: int = 1.25    # ucb
     c2: int = 19652 
@@ -118,8 +118,11 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
     def get_region(self,idx):
         row,col = idx
 
-        x_list = self.state[row].tolist()   ; x_list.pop(row)
-        y_list = self.state[:,col].tolist() ; y_list.pop(col)
+        x_list = self.state[row].tolist()   
+        x_list.pop(col)
+
+        y_list = self.state[:,col].tolist()  
+        y_list.pop(row)
 
         block_idx = (row // 3) * 3 + (col // 3)
         block = self.state.reshape(3,3,3,3).permute(0,2,1,3).reshape(9,9)[block_idx].tolist()
@@ -127,7 +130,8 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
         cell_idx = block_row * 3 + block_col
         block.pop(cell_idx)
         
-        region = torch.tensor([x_list + y_list + block]).unique().nonzero().squeeze()
+        region = torch.tensor([x_list + y_list + block]).unique().squeeze()
+        region = region[region!=0]
         return region
 
     def update_domain(self):
@@ -138,7 +142,6 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
 
             filler = torch.full((domain.size(0) - region.size(0),),0)
             region = torch.cat([region,filler])
-            assert domain.shape == region.shape
             domain_mask = (region == domain)
             domain = torch.masked_fill(domain,domain_mask,-1)
 
@@ -152,13 +155,15 @@ class mrv: # Cell sampling with Minimum Remaining Value (MRV) heuristic
             value_tensor[i] = value  
         return value_tensor.squeeze()
 
-    def sample_cell(self):
+    def sample_cell(self): 
         self.update_domain()
         vals = self.get_minimum_value()
         min_vals = vals.min()
         x = (vals == min_vals).nonzero()
         sample_idx = random.choices(x)
         cell = self.dic[:,:2][sample_idx]
+
+        sys.exit(cell)
         return cell.squeeze()
 
 
@@ -222,13 +227,13 @@ class mcts:
          
             for nod in reversed(path): # backpropagation, TODO : check and update code 
                 nod.visit_count += 1
-                nod.mean_value += value_n
+                nod.mean_value += (value_n - nod.mean_value) / nod.visit_count
                 value_n = nod.reward + self.mcts_hypers.gamma * value_n
              
-        pi = torch.tensor([v.visit_count for v in root.childs.values()]) 
+        pi = torch.tensor([v.visit_count for v in root.childs.values()])
         pi /= pi.sum()
-        
-        action = max(root.childs.keys(),key=lambda a: root.childs[a].visit_count)
+    
+        action = torch.multinomial(pi,1).item() + 1 
         value = root.childs[action].mean_value
         return pi,action,value.squeeze(),target_cell,depth
     
@@ -238,7 +243,7 @@ class mcts:
 
         for action,child in parent.childs.items():
             x = child.prior
-            x *= math.sqrt(parent.visit_count) / (1 + child.visit_count)
+            x *= math.sqrt(parent.visit_count + 1) / (1 + child.visit_count)
             x *= c1 + math.log((parent.visit_count + c2 + 1) / c2)
             scores[action] = child.mean_value + x
         a = max(scores,key=scores.get)
@@ -268,10 +273,10 @@ class replay_buffer:
         with torch.no_grad():
             for n in range(self.hypers.batch_size):
                 mcts_pi,mcts_action,mcts_value,target_cell,_ = self.mcts.search(self.obs,self.idx)
-                #mcts_action = random.randint(1,9)  # TODO remove after testing done
+             
                 action = np.append(target_cell.numpy(),mcts_action)
                 state,reward,done,trunc,info = self.env.step(action)
-                #self.env.render() 
+                
                 self.mcts_pi[n].copy_(mcts_pi)
                 self.env_obs[n].copy_(process_obs(torch.as_tensor(self.obs)))
                 self.mcts_value[n].copy_(mcts_value)
@@ -449,11 +454,16 @@ class main:
                         )
                  
 if __name__ == "__main__":
+    import warnings,logging
+    warnings.filterwarnings("ignore")
+    logging.disable(logging.CRITICAL)
+
     """
     seed = 42
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     """
+
     main().run(start=True)
 
