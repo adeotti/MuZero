@@ -20,7 +20,7 @@ class main_hypers:
     max_steps: int = 1_000
     warmup: int = 200
     env_horizon: int = 400
-    batch_size: int = 800
+    batch_size: int = 32
     mini_batch: int = 40
     lr: int = 0.001
     k: int = 5
@@ -30,9 +30,9 @@ class main_hypers:
 class mcts_hypers:
     num_sim: int = 100
     max_depth: int = 400
-    epsilon: int = 0.25 # dirichlet
+    epsilon: int = 0.25      # dirichlet
     alpha_value: int = 0.3   
-    c1: int = 1.25    # ucb
+    c1: int = 1.25           # ucb
     c2: int = 19652 
     gamma: int = 0.1         # backpropagation
 
@@ -93,21 +93,27 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
         
         self.l1 = nn.LazyLinear(1024)
-        self.l2 = nn.LazyLinear(512)
+        self.l2 = nn.LazyLinear(9*81)
 
+        self.pos = nn.LazyLinear(81)
         self.policy = nn.LazyLinear(9)
+
         self.value = nn.LazyLinear(1)
 
     def forward(self,latent_state):
         x = self.conv1(latent_state)
         x = self.conv2(x)
         x = self.conv3(x)
+
         x = self.l1(x.flatten(1))
-        x = self.l2(x) 
-        policy = self.policy(x)
-        policy = F.softmax(policy,-1)
+        x = self.l2(x) # 729
+
+        pre_pos = F.softmax(self.pos(x),-1)
+        pos = Categorical(probs=pre_pos).sample()
+        policy = F.softmax((x.reshape(x.size(0),81,9)[:,pos]),-1)
+        
         value = self.value(x)
-        return policy,value
+        return pos,policy,value
     
 
 class node:
@@ -129,9 +135,9 @@ class mcts:
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
     def search(self,observation,idx):
-        target_cell = torch.tensor(random.choices(idx.tolist())).squeeze() # TODO remove later
+        #target_cell = torch.tensor(random.choices(idx.tolist())).squeeze() # TODO remove later
         hidden_state = self.rep_net(process_obs(observation))
-        policy,value = self.pred_net(hidden_state)
+        target_cell,policy,value = self.pred_net(hidden_state)
 
         root = node(0) ; root.state = hidden_state ; depth = 0
 
@@ -212,7 +218,7 @@ class replay_buffer:
 
     def step(self,n):
         with torch.no_grad():
-            mcts_pi,mcts_action,mcts_value,target_cell,_ = self.mcts.search(self.obs,self.idx)
+            mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(self.obs,self.idx)
          
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
@@ -231,12 +237,13 @@ class replay_buffer:
                 self.obs = state
 
             self.pointer += 1
+        return reward,mcts_depth
     
-    def compute_value_target(self):
+    def compute_value_target(self): # TODO Fix calculation
         with torch.no_grad():
             self.value_target = torch.empty(*self.mcts_value.shape,device=self.hypers.device)
             gamma = torch.pow(torch.full((self.hypers.batch_size,),0.2),torch.arange(self.hypers.batch_size))
-            mask = (1 - self.env_trunc.float()).cumprod(0) # TODO  Update 
+            mask = (1 - self.env_trunc.float()).cumprod(0) # !!!!
 
             for n in range(self.hypers.batch_size):                
                 self.value_target[n] = (
@@ -244,11 +251,11 @@ class replay_buffer:
                 ).sum()
         
     def sample(self):
-        M = 32 
-        k = self.hypers.k
+        B = self.hypers.batch 
+        K = self.hypers.k
 
-        start = torch.randint(0,self.hypers.env_horizon - k,(M,))  
-        idx = start.unsqueeze(-1) + torch.arange(k)
+        start = torch.randint(0,self.hypers.env_horizon - K,(B,))  
+        idx = start.unsqueeze(-1) + torch.arange(K)
         
         s_obs = self.env_obs[idx]                   # Observation
         s_pi = self.mcts_pi[idx]                    # Pi
@@ -351,8 +358,8 @@ class main:
             with mlflow.start_run() as run:
                 mlflow.log_params((asdict(self.main_hypers) | asdict(self.mcts_hypers)))
 
-                for n in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
-                    self.replay_buffer.step(n)
+                for global_step in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
+                    step_reward,mcts_depth = self.replay_buffer.step(global_step)
                 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
                         self.replay_buffer.compute_value_target()
@@ -389,8 +396,11 @@ class main:
                             "loss reward":loss_r,
                             "loss value":loss_v,
                             "loss policy":loss_p,
-                            "total loss": total_loss
-                            }
+                            "total loss": total_loss,
+                            "step reward": step_reward,
+                            "MCTS depth":mcts_depth
+                            },
+                            step = global_step
                         )
                  
 if __name__ == "__main__":
