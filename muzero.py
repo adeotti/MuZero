@@ -18,8 +18,8 @@ from tqdm import tqdm
 class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     max_steps: int = 1_000
-    warmup: int = 200
-    env_horizon: int = 400
+    warmup: int = 100 #200
+    env_horizon: int = 100  # 300
     batch_size: int = 32
     mini_batch: int = 40
     lr: int = 0.001
@@ -201,13 +201,14 @@ class mcts:
 
 class replay_buffer:
     def init_buffer(self):
-        self.mcts_pi = torch.empty((self.hypers.batch_size,1,9),device=self.hypers.device)
-        self.mcts_value = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
-        self.mcts_action = torch.empty((self.hypers.batch_size,1,3),device=self.hypers.device)
+        self.mcts_pi = torch.empty((self.hypers.max_steps,1,9),device=self.hypers.device)
+        self.mcts_value = torch.empty((self.hypers.max_steps,1),device=self.hypers.device)
+        self.value_target = torch.empty(*self.mcts_value.shape,device=self.hypers.device)
+        self.mcts_action = torch.empty((self.hypers.max_steps,1,3),device=self.hypers.device)
         #
-        self.env_reward = torch.empty((self.hypers.batch_size,1),device=self.hypers.device)
-        self.env_obs = torch.empty((self.hypers.batch_size,1,11,9,9),device=self.hypers.device,dtype=torch.half)
-        self.env_trunc = torch.empty((self.hypers.batch_size,1),device=self.hypers.device,dtype=torch.bool)
+        self.env_reward = torch.empty((self.hypers.max_steps,1),device=self.hypers.device)
+        self.env_obs = torch.empty((self.hypers.max_steps,1,11,9,9),device=self.hypers.device,dtype=torch.half)
+        self.env_trunc = torch.empty((self.hypers.max_steps,1),device=self.hypers.device,dtype=torch.bool)
 
     def __init__(self,env,mcts,hypers):
         self.env = env
@@ -223,7 +224,7 @@ class replay_buffer:
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(self.obs,self.idx)
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
-         
+            self.env.render() 
             self.mcts_pi[n].copy_(mcts_pi)
             self.env_obs[n].copy_(process_obs(torch.as_tensor(self.obs)))
             self.mcts_value[n].copy_(mcts_value)
@@ -238,21 +239,34 @@ class replay_buffer:
                 self.obs = state
 
             self.pointer += 1
+            
+            if n != 0 and n % self.hypers.batch_size == 0:
+                self.compute_value_target()
+
         return reward,mcts_depth
     
-    def compute_value_target(self): # TODO Fix calculation
+    def compute_value_target(self): 
         with torch.no_grad():
-            self.value_target = torch.empty(*self.mcts_value.shape,device=self.hypers.device)
-            gamma = torch.pow(torch.full((self.hypers.batch_size,),0.2),torch.arange(self.hypers.batch_size))
-            mask = (1 - self.env_trunc.float()).cumprod(0) # !!!!
+            mcts_value = self.mcts_value[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
+            value_target = self.value_target[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
+            reward = self.env_reward[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
 
-            for n in range(self.hypers.batch_size):                
-                self.value_target[n] = (
-                    (self.env_reward[n:].squeeze() * gamma[n:] * mask[n:].squeeze()) + self.mcts_value[n]
-                ).sum()
+            not_done = (1 - self.env_trunc.float()[self.pointer - self.hypers.batch_size : self.pointer])
+            mask = not_done.cumprod(0)
+            gamma = torch.pow(torch.full((self.hypers.batch_size,),0.2),torch.arange(self.hypers.batch_size))
+            
+            k_steps = 5
+        
+            for n in range(self.hypers.batch_size):
+                k_end = min(k_steps,self.hypers.batch_size - n)
+                x =  reward[n:] * gamma[n:] * mask[n:]
+                x += gamma[k_end] * mcts_value[k_end] 
+                value_target[n] = x.sum()
+
+            self.value_target[self.pointer - self.hypers.batch_size : self.pointer] = value_target.unsqueeze(-1)
         
     def sample(self):
-        B = self.hypers.batch 
+        B = self.hypers.batch_size 
         K = self.hypers.k
 
         start = torch.randint(0,self.hypers.env_horizon - K,(B,))  
@@ -363,9 +377,6 @@ class main:
                     step_reward,mcts_depth = self.replay_buffer.step(global_step)
                 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
-                        sys.exit()
-                        self.replay_buffer.compute_value_target()
-                        
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
                 
                         hidden_rep = self.representation_net(obs[:,0].float())
@@ -404,6 +415,7 @@ class main:
                             },
                             step = global_step
                         )
+        
                  
 if __name__ == "__main__":
     import warnings,logging
