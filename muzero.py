@@ -96,8 +96,6 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         self.l2 = nn.LazyLinear(9*81)
 
         self.pos = nn.LazyLinear(81)
-        self.policy = nn.LazyLinear(9)
-
         self.value = nn.LazyLinear(1)
 
     def forward(self,latent_state):
@@ -110,10 +108,14 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
 
         pre_pos = F.softmax(self.pos(x),-1)
         pos = Categorical(probs=pre_pos).sample()
-        policy = F.softmax((x.reshape(x.size(0),81,9)[:,pos]),-1)
+        xpos = pos // 9
+        ypos = pos % 9 
+        target_cell = torch.cat([xpos,ypos])
+        policy = F.softmax((x.reshape(x.size(0),81,9)[:,pos]),-1)        
         
         value = self.value(x)
-        return pos,policy,value
+
+        return target_cell,policy,value
     
 
 class node:
@@ -165,7 +167,7 @@ class mcts:
             parent = path[-2]
             action = self.cat_action(target_cell,torch.tensor([action]))
             reward_n,state_n = self.dyn_net(parent.state,action.unsqueeze(0))
-            policy_n,value_n = self.pred_net(state_n) 
+            _,policy_n,value_n = self.pred_net(state_n) 
             
             path[-1].state = state_n ; path[-1].reward = reward_n
             
@@ -219,7 +221,6 @@ class replay_buffer:
     def step(self,n):
         with torch.no_grad():
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(self.obs,self.idx)
-         
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
          
@@ -296,7 +297,7 @@ class main:
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action.unsqueeze(0))
-        policy,value = self.prediction_net(latent_state)
+        _,policy,value = self.prediction_net(latent_state)
         
         def init_w(layer):
             if isinstance(layer,(nn.Linear,nn.Conv2d)):
@@ -362,6 +363,7 @@ class main:
                     step_reward,mcts_depth = self.replay_buffer.step(global_step)
                 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
+                        sys.exit()
                         self.replay_buffer.compute_value_target()
                         
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
