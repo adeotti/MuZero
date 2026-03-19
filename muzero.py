@@ -1,16 +1,17 @@
-import torch,sys,os,gymnasium_sudoku,mlflow,random,math
-import torch.nn as nn
-import torch.nn.functional as F
+import sys,gymnasium_sudoku,mlflow,random,math
 import gymnasium as gym
 import numpy as np
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from torch import vmap
 from torch.distributions import Categorical,Dirichlet
 from torch.optim import Adam
-from dataclasses import dataclass,asdict
 from torch.utils.tensorboard import SummaryWriter
 
+from dataclasses import dataclass,asdict
 from itertools import chain
 from tqdm import tqdm
 
@@ -171,7 +172,7 @@ class mcts:
             parent = path[-2]
             action = self.cat_action(target_cell,torch.tensor([action]))
             reward_n,state_n = self.dyn_net(parent.state,action.unsqueeze(0))
-            _,policy_n,value_n = self.pred_net(state_n) 
+            _,policy_n,value_n = self.pred_net(state_n) # TODO attention to the target cell 
             
             path[-1].state = state_n ; path[-1].reward = reward_n
             
@@ -401,10 +402,13 @@ class main:
                         
                         u_reward = torch.stack(u_reward).squeeze().permute(-1,0)
                         u_value = torch.stack(u_value).squeeze().permute(-1,0)
-                        u_policy = torch.stack(u_policy).permute(1,0,-1) 
+                        u_policy = torch.stack(u_policy).permute(1,0,-1)
                     
                         loss_r = F.mse_loss(u_reward,reward).mean()
                         loss_v = F.mse_loss(u_value,value_target).mean()
+
+                        # TODO fix policy loss computation taking into consideration the fact that the policy is 
+                        # constrained on another distribution
                         loss_p = -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
                         total_loss = loss_r + loss_v + loss_p + (self.main_hypers.l2_coeff * self.l2())
                      
@@ -424,7 +428,7 @@ class main:
                             step = global_step
                         )
         
-                 
+
 if __name__ == "__main__":
     import warnings,logging
     warnings.filterwarnings("ignore")
