@@ -20,7 +20,7 @@ from tqdm import tqdm
 class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     max_steps: int = 1_000
-    warmup: int = 50 #300
+    warmup: int = 400 #300
     env_horizon: int = 100  # 300
     batch_size: int = 10#32
     mini_batch: int = 40
@@ -62,10 +62,10 @@ class representation_net(nn.Module): # h : state -> s^0
 
     def forward(self,x):
         x = torch.einsum("nbrc,bo->norc",x,self.input_emb) 
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x) # [1,32,9,9]
+        x = F.silu(self.conv1(x))
+        x = F.silu(self.conv2(x))
+        x = F.silu(self.conv3(x))
+        x = F.silu(self.conv4(x)) # [1,32,9,9]
         return x
 
 class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
@@ -79,13 +79,13 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
         self.l3 = nn.LazyLinear(1)
 
     def forward(self,x,action): 
-        x = self.conv1(x)
-        x = self.conv2(x)
-        latent_state = self.conv3(x) # [1,32,9,9]
+        x = F.silu(self.conv1(x))
+        x = F.silu(self.conv2(x))
+        latent_state = F.silu(self.conv3(x)) # [1,32,9,9]
         n = torch.cat([latent_state.flatten(1),action],dim=1)
-        n = self.l1(n)
-        n = self.l2(n)
-        reward = self.l3(n)
+        n = F.silu(self.l1(n))
+        n = F.silu(self.l2(n))
+        reward = F.silu(self.l3(n))
         return reward,latent_state
 
 class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
@@ -104,11 +104,11 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     def forward(self,latent_state):
         B = latent_state.size(0)
 
-        x = self.conv1(latent_state)
-        x = self.conv2(x)
-        x = self.conv3(x)
+        x = F.silu(self.conv1(latent_state))
+        x = F.silu(self.conv2(x))
+        x = F.silu(self.conv3(x))
 
-        x = self.l1(x.flatten(1))
+        x = F.relu(self.l1(x.flatten(1)))
         x = self.l2(x) # 729
         
         pre_pos = F.softmax(self.pos(x),-1)
@@ -118,10 +118,11 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         ypos = pos % 9 
         target_cell = torch.cat([xpos,ypos]) 
         cell_probs = pre_pos.probs[torch.arange(B),pos].unsqueeze(-1) # for joint prob distribution computation later
-
+    
         x_reshaped = x.reshape(B,81,9)
         policy = F.softmax((x_reshaped[torch.arange(B),pos]),-1).squeeze(1) 
         policy = policy * cell_probs  # p(action) = p(cell target) * p(cell value | cell target)
+        
         value = self.value(x)
 
         return target_cell,policy,value
@@ -233,7 +234,6 @@ class replay_buffer:
             
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
-            self.env.render()
            
             self.mcts_pi[n].copy_(mcts_pi)
             self.env_obs[n].copy_(torch.as_tensor(self.obs))
@@ -391,7 +391,7 @@ class main:
                 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample() 
-                    
+                        
                         hidden_rep = self.representation_net(obs[:,0].float())
                         u_reward,u_value,u_policy = [],[],[]
                         for i in range(self.main_hypers.k):
@@ -407,13 +407,10 @@ class main:
                         u_reward = torch.stack(u_reward).squeeze().permute(-1,0)
                         u_value = torch.stack(u_value).squeeze().permute(-1,0)
                         u_policy = torch.stack(u_policy).permute(1,0,-1)
-                    
+                        
                         loss_r = F.mse_loss(u_reward,reward).mean()
-                        loss_v = F.mse_loss(u_value,value_target).mean()
-
-                        # TODO fix policy loss computation taking into consideration the fact that the policy is 
-                        # constrained on another distribution
-                        loss_p = 0.1 # -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
+                        loss_v = F.mse_loss(u_value,value_target).mean() 
+                        loss_p = -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
                         total_loss = loss_r + loss_v + loss_p + (self.main_hypers.l2_coeff * self.l2())
                      
                         self.optim.zero_grad(set_to_none=True)
