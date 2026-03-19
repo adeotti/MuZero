@@ -5,6 +5,7 @@ import gymnasium as gym
 import numpy as np
 
 from torch import Tensor
+from torch import vmap
 from torch.distributions import Categorical,Dirichlet
 from torch.optim import Adam
 from dataclasses import dataclass,asdict
@@ -18,9 +19,9 @@ from tqdm import tqdm
 class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     max_steps: int = 1_000
-    warmup: int = 100 #200
+    warmup: int = 50 #300
     env_horizon: int = 100  # 300
-    batch_size: int = 32
+    batch_size: int = 10#32
     mini_batch: int = 40
     lr: int = 0.001
     k: int = 5
@@ -28,7 +29,7 @@ class main_hypers:
 
 @dataclass(frozen=True)
 class mcts_hypers:
-    num_sim: int = 100
+    num_sim: int = 10#100
     max_depth: int = 400
     epsilon: int = 0.25      # dirichlet
     alpha_value: int = 0.3   
@@ -44,8 +45,9 @@ def env(horizon=None):
 def process_obs(x): # -> one hot encoding + mask
     x = torch.as_tensor(x).long() 
     m = (x == 0).unsqueeze(0).float()
-    x = F.one_hot(x,num_classes=10).permute(-1,0,1).float()
-    return torch.cat([x,m],dim=0).unsqueeze(0) 
+    x = F.one_hot(x,num_classes=10).squeeze()
+    x = x.permute(-1,0,1).float()
+    return torch.cat([x,m.squeeze(1)],dim=0).unsqueeze(0) 
 
 
 class representation_net(nn.Module): # h : state -> s^0
@@ -99,22 +101,25 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         self.value = nn.LazyLinear(1)
 
     def forward(self,latent_state):
+        B = latent_state.size(0)
+
         x = self.conv1(latent_state)
         x = self.conv2(x)
         x = self.conv3(x)
 
         x = self.l1(x.flatten(1))
         x = self.l2(x) # 729
-
+        
         pre_pos = F.softmax(self.pos(x),-1)
         pos = Categorical(probs=pre_pos).sample()
         xpos = pos // 9
         ypos = pos % 9 
         target_cell = torch.cat([xpos,ypos])
-        policy = F.softmax((x.reshape(x.size(0),81,9)[:,pos]),-1)        
-        
-        value = self.value(x)
 
+        x_reshaped = x.reshape(B,81,9)
+        policy = F.softmax(x_reshaped[torch.arange(B),pos],-1).squeeze(1)
+
+        value = self.value(x)
         return target_cell,policy,value
     
 
@@ -137,7 +142,6 @@ class mcts:
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
     def search(self,observation,idx):
-        #target_cell = torch.tensor(random.choices(idx.tolist())).squeeze() # TODO remove later
         hidden_state = self.rep_net(process_obs(observation))
         target_cell,policy,value = self.pred_net(hidden_state)
 
@@ -207,7 +211,7 @@ class replay_buffer:
         self.mcts_action = torch.empty((self.hypers.max_steps,1,3),device=self.hypers.device)
         #
         self.env_reward = torch.empty((self.hypers.max_steps,1),device=self.hypers.device)
-        self.env_obs = torch.empty((self.hypers.max_steps,1,11,9,9),device=self.hypers.device,dtype=torch.half)
+        self.env_obs = torch.empty((self.hypers.max_steps,1,9,9),device=self.hypers.device,dtype=torch.float)
         self.env_trunc = torch.empty((self.hypers.max_steps,1),device=self.hypers.device,dtype=torch.bool)
 
     def __init__(self,env,mcts,hypers):
@@ -224,9 +228,10 @@ class replay_buffer:
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(self.obs,self.idx)
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
-            self.env.render() 
+            self.env.render()
+           
             self.mcts_pi[n].copy_(mcts_pi)
-            self.env_obs[n].copy_(process_obs(torch.as_tensor(self.obs)))
+            self.env_obs[n].copy_(torch.as_tensor(self.obs))
             self.mcts_value[n].copy_(mcts_value)
             self.mcts_action[n].copy_(torch.as_tensor(action))
             self.env_reward[n].copy_(reward)
@@ -271,8 +276,11 @@ class replay_buffer:
 
         start = torch.randint(0,self.hypers.env_horizon - K,(B,))  
         idx = start.unsqueeze(-1) + torch.arange(K)
-        
-        s_obs = self.env_obs[idx]                   # Observation
+    
+        # sample obs and process it (apply process obs function (one hot))
+        s_obs = self.env_obs[idx] # observation
+        s_obs = vmap(vmap(process_obs))(s_obs)
+    
         s_pi = self.mcts_pi[idx]                    # Pi
         s_action = self.mcts_action[idx]            # Action
         s_reward = self.env_reward[idx]             # Reward
@@ -377,14 +385,14 @@ class main:
                     step_reward,mcts_depth = self.replay_buffer.step(global_step)
                 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
-                        obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample()
-                
+                        obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample() 
+                    
                         hidden_rep = self.representation_net(obs[:,0].float())
                         u_reward,u_value,u_policy = [],[],[]
                         for i in range(self.main_hypers.k):
                             r,s = self.dynamic_net(hidden_rep,action[:,i])
-                            p,v = self.prediction_net(s)
-
+                            _,p,v = self.prediction_net(s)
+                         
                             u_reward.append(r)
                             u_value.append(v)
                             u_policy.append(p)
@@ -394,7 +402,7 @@ class main:
                         u_reward = torch.stack(u_reward).squeeze().permute(-1,0)
                         u_value = torch.stack(u_value).squeeze().permute(-1,0)
                         u_policy = torch.stack(u_policy).permute(1,0,-1) 
-                   
+                    
                         loss_r = F.mse_loss(u_reward,reward).mean()
                         loss_v = F.mse_loss(u_value,value_target).mean()
                         loss_p = -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
