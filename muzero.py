@@ -112,15 +112,18 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         x = self.l2(x) # 729
         
         pre_pos = F.softmax(self.pos(x),-1)
-        pos = Categorical(probs=pre_pos).sample()
+        pre_pos = Categorical(probs=pre_pos)
+        pos = pre_pos.sample()
         xpos = pos // 9
         ypos = pos % 9 
-        target_cell = torch.cat([xpos,ypos])
+        target_cell = torch.cat([xpos,ypos]) 
+        cell_probs = pre_pos.probs[torch.arange(B),pos].unsqueeze(-1) # for joint prob distribution computation later
 
         x_reshaped = x.reshape(B,81,9)
-        policy = F.softmax(x_reshaped[torch.arange(B),pos],-1).squeeze(1)
-
+        policy = F.softmax((x_reshaped[torch.arange(B),pos]),-1).squeeze(1) 
+        policy = policy * cell_probs  # p(action) = p(cell target) * p(cell value | cell target)
         value = self.value(x)
+
         return target_cell,policy,value
     
 
@@ -142,7 +145,7 @@ class mcts:
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.cat_action = lambda cell,value : torch.cat([cell,value])
 
-    def search(self,observation,idx):
+    def search(self,observation,idx): # TODO fix cell value and target cell selection
         hidden_state = self.rep_net(process_obs(observation))
         target_cell,policy,value = self.pred_net(hidden_state)
 
@@ -227,6 +230,7 @@ class replay_buffer:
     def step(self,n):
         with torch.no_grad():
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(self.obs,self.idx)
+            
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
             self.env.render()
@@ -281,8 +285,8 @@ class replay_buffer:
         # sample obs and process it (apply process obs function (one hot))
         s_obs = self.env_obs[idx] # observation
         s_obs = vmap(vmap(process_obs))(s_obs)
-    
-        s_pi = self.mcts_pi[idx]                    # Pi
+        
+        s_pi = self.mcts_pi[idx] # factored policy
         s_action = self.mcts_action[idx]            # Action
         s_reward = self.env_reward[idx]             # Reward
         s_value = self.mcts_value[idx]              # Mcts Value
@@ -409,7 +413,7 @@ class main:
 
                         # TODO fix policy loss computation taking into consideration the fact that the policy is 
                         # constrained on another distribution
-                        loss_p = -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
+                        loss_p = 0.1 # -(u_policy * (pi + 1e-8).log()).sum(-1).mean()
                         total_loss = loss_r + loss_v + loss_p + (self.main_hypers.l2_coeff * self.l2())
                      
                         self.optim.zero_grad(set_to_none=True)
