@@ -265,7 +265,7 @@ class replay_buffer:
             mask = not_done.cumprod(0)
             gamma = torch.pow(torch.full((self.hypers.batch_size,),0.2),torch.arange(self.hypers.batch_size))
             
-            k_steps = 5
+            k_steps = 5 # steps before boostraping
         
             for n in range(self.hypers.batch_size):
                 k_end = min(k_steps,self.hypers.batch_size - n)
@@ -283,14 +283,14 @@ class replay_buffer:
         idx = start.unsqueeze(-1) + torch.arange(K)
     
         # sample obs and process it (apply process obs function (one hot))
-        s_obs = self.env_obs[idx] # observation
+        s_obs = self.env_obs[idx] 
         s_obs = vmap(vmap(process_obs))(s_obs)
         
         s_pi = self.mcts_pi[idx] # factored policy
-        s_action = self.mcts_action[idx]            # Action
-        s_reward = self.env_reward[idx]             # Reward
-        s_value = self.mcts_value[idx]              # Mcts Value
-        s_value_target = self.value_target[idx]     # Value Target
+        s_action = self.mcts_action[idx]    # action
+        s_reward = self.env_reward[idx]  # reward
+        s_value = self.mcts_value[idx]  # mcts Value
+        s_value_target = self.value_target[idx]  # value Target
         return map(torch.squeeze,(s_obs,s_pi,s_action,s_reward,s_value,s_value_target))
 
 
@@ -359,24 +359,25 @@ class main:
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
         self.l2 = l2_regularization(self.representation_net,self.dynamic_net,self.prediction_net)
         
-    def save(self,n):
+    def save_model(self,n):
+        path = f"./checkpoint-{n}.pth"
+
         obj = {
             "representation_net_state":self.representation_net.state_dict(),                
             "dynamic_net_state":self.dynamic_net.state_dict(),
             "prediction_net_state":self.prediction_net.state_dict(),
             "optim_state":self.optim.state_dict()
         }
-        torch.save(obj,f"./functions_states-{n}.pth")
+
+        torch.save(obj,path)
+        mlflow.log_artifact(path,artifact_path="checkpoints")
 
     def load(self,path):
         obj = torch.load(path)
         self.representation_net.load_state_dict(obj["representation_net_state"],strict=True)
         self.dynamic_net.load_state_dict(obj["dynamic_net_state"],strict=True)
         self.prediction_net.load_state_dict(obj["prediction_net_state"],strict=True)
-        self.optim.load_state_dict(obj["optim_state"])
-
-    def log_data(self):
-        pass 
+        self.optim.load_state_dict(obj["optim_state"]) 
     
     def run(self,start=False):
         if start:
@@ -428,7 +429,9 @@ class main:
                             },
                             step = global_step
                         )
-        
+
+                        if global_step % 10 == 0:
+                            self.save_model(global_step)
 
 if __name__ == "__main__":
     import warnings,logging
