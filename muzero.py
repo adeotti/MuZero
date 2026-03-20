@@ -30,7 +30,7 @@ class main_hypers:
 
 @dataclass(frozen=True)
 class mcts_hypers:
-    num_sim: int = 10#100
+    num_sim: int = 800
     max_depth: int = 400
     epsilon: int = 0.25      # dirichlet
     alpha_value: int = 0.3   
@@ -160,23 +160,23 @@ class mcts:
                 prior = (1 - self.mcts_hypers.epsilon) * p.item() 
                 prior += self.mcts_hypers.epsilon * noise[n].item() 
                 root.childs[n+1] = node(round(prior,4))
-            depth += 1 
         
         for _ in range(self.mcts_hypers.num_sim): # for n in range simulation
             path = [root]
             current_node = root
+            depth = 1
             
-            while current_node.is_expanded():
+            while current_node.is_expanded() and depth <= self.mcts_hypers.max_depth:
                 action = self.ucb(current_node)
                 current_node = current_node.childs[action]
                 path.append(current_node)
-                depth+=1
+                depth += 1
             
             # expand leaf node from parent's hidden state
             parent = path[-2]
             action = self.cat_action(target_cell,torch.tensor([action]))
             reward_n,state_n = self.dyn_net(parent.state,action.unsqueeze(0))
-            _,policy_n,value_n = self.pred_net(state_n) # TODO attention to the target cell 
+            target_cell,policy_n,value_n = self.pred_net(state_n) # TODO attention to the target cell 
             
             path[-1].state = state_n ; path[-1].reward = reward_n
             
@@ -231,10 +231,10 @@ class replay_buffer:
     def step(self,n):
         with torch.no_grad():
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(self.obs,self.idx)
-            
+         
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
-           
+            self.env.render() 
             self.mcts_pi[n].copy_(mcts_pi)
             self.env_obs[n].copy_(torch.as_tensor(self.obs))
             self.mcts_value[n].copy_(mcts_value)
