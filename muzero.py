@@ -19,8 +19,8 @@ from tqdm import tqdm
 @dataclass(frozen=True)
 class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
-    max_steps: int = 1_000
-    warmup: int = 400 #300
+    max_steps: int = 1_000  
+    warmup: int = 400 
     env_horizon: int = 100  # 300
     batch_size: int = 10#32
     mini_batch: int = 40
@@ -40,7 +40,7 @@ class mcts_hypers:
 
 
 def env(horizon=None):
-    x = gym.make("sudoku-v1",mode="easy",horizon=horizon,render_mode="human")
+    x = gym.make("sudoku-v1",mode="easy",horizon=horizon)
     return x
 
 def process_obs(x): # -> one hot encoding + mask
@@ -144,7 +144,7 @@ class mcts:
     def __init__(self,networks:list,hypers):
         self.mcts_hypers = hypers
         self.rep_net,self.dyn_net,self.pred_net = networks
-        self.cat_action = lambda cell,value : torch.cat([cell,value])
+        self.cat_action = lambda cell,value : torch.cat([cell,value.to(cell.device)])
 
     def search(self,observation,idx): # TODO fix cell value and target cell selection
         hidden_state = self.rep_net(process_obs(observation))
@@ -230,11 +230,14 @@ class replay_buffer:
 
     def step(self,n):
         with torch.no_grad():
-            mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(self.obs,self.idx)
+            mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(
+                    torch.as_tensor(self.obs.to(self.hypers.device)),
+                    self.idx
+                    )
          
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
-            self.env.render() 
+     
             self.mcts_pi[n].copy_(mcts_pi)
             self.env_obs[n].copy_(torch.as_tensor(self.obs))
             self.mcts_value[n].copy_(mcts_value)
@@ -263,7 +266,10 @@ class replay_buffer:
 
             not_done = (1 - self.env_trunc.float()[self.pointer - self.hypers.batch_size : self.pointer])
             mask = not_done.cumprod(0)
-            gamma = torch.pow(torch.full((self.hypers.batch_size,),0.2),torch.arange(self.hypers.batch_size))
+            gamma = torch.pow(
+                torch.full((self.hypers.batch_size,),0.2),
+                torch.arange(self.hypers.batch_size)
+            ).to(self.hypers.device)
             
             k_steps = 5 # steps before boostraping
         
@@ -315,12 +321,12 @@ class l2_regularization():
 
 class main:
     def __init_nets(self):
-        self.representation_net = representation_net()
-        self.dynamic_net = dynamic_net()
-        self.prediction_net = prediction_net()
+        self.representation_net = representation_net().to(self.main_hypers.device)
+        self.dynamic_net = dynamic_net().to(self.main_hypers.device)
+        self.prediction_net = prediction_net().to(self.main_hypers.device)
     
-        init_state = torch.empty((1,11,9,9),device=None)
-        action = torch.as_tensor(self.env.action_space.sample(),device=None)
+        init_state = torch.ones((1,11,9,9),device=self.main_hypers.device)
+        action = torch.as_tensor(self.env.action_space.sample(),device=self.main_hypers.device)
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action.unsqueeze(0))
