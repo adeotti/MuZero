@@ -21,22 +21,21 @@ class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
     max_steps: int = 1_000  
     warmup: int = 400 
-    env_horizon: int = 100  # 300
-    batch_size: int = 10#32
-    mini_batch: int = 40
+    env_horizon: int = 300
+    batch_size: int = 32
     lr: int = 0.001
     k: int = 5
     l2_coeff: int = 0.1
 
 @dataclass(frozen=True)
 class mcts_hypers:
-    num_sim: int = 800
-    max_depth: int = 400
+    num_sim: int = 200
+    max_depth: int = 250
     epsilon: int = 0.25      # dirichlet
     alpha_value: int = 0.3   
     c1: int = 1.25           # ucb
     c2: int = 19652 
-    gamma: int = 0.1         # backpropagation
+    gamma: int = 0.99        # backpropagation
 
 
 def env(horizon=None):
@@ -176,7 +175,7 @@ class mcts:
             parent = path[-2]
             action = self.cat_action(target_cell,torch.tensor([action]))
             reward_n,state_n = self.dyn_net(parent.state,action.unsqueeze(0))
-            target_cell,policy_n,value_n = self.pred_net(state_n) # TODO attention to the target cell 
+            target_cell,policy_n,value_n = self.pred_net(state_n) 
             
             path[-1].state = state_n ; path[-1].reward = reward_n
             
