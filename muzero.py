@@ -367,7 +367,7 @@ class main:
                 lr = self.main_hypers.lr
         )
         self.mcts = mcts(
-                (self.representation_net,self.dynamic_net,self.prediction_net),
+                (self.slow_rep_net,self.slow_dyn_net,self.slow_pred_net),
                 self.mcts_hypers
         ) 
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
@@ -378,7 +378,6 @@ class main:
     def buffer_worker(self):
         for n in range(self.main_hypers.max_steps):
             self.replay_buffer.step(n)
-            print(n)
         
     def save_model(self,n):
         path = f"./checkpoint-{n}.pth"
@@ -403,7 +402,6 @@ class main:
     def run(self,start=False):
         if start:
             self.buffer_thread.start()
-            sys.exit()
             mlflow.end_run()
             mlflow.set_experiment("Muzero")
             
@@ -411,7 +409,7 @@ class main:
                 mlflow.log_params((asdict(self.main_hypers) | asdict(self.mcts_hypers)))
 
                 for global_step in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
-                    step_reward,mcts_depth = self.replay_buffer.step(global_step)
+                    #step_reward,mcts_depth = self.replay_buffer.step(global_step)
                 
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample() 
@@ -441,6 +439,12 @@ class main:
                         total_loss.backward()
                         self.optim.step()
 
+                        # update the slow networks after a batch worth data is collected
+                        if global_steps % self.main_hypers.batch_size == 0:
+                            self.slow_pred_net.load_state_dict(self.prediction_net.state_dict())
+                            self.slow_dyn_net.load_state_dict(self.dynamic_net.state_dict())
+                            self.slow_rep_net.load_state_dict(self.representation_net.state_dict())
+
                         mlflow.log_metrics(
                             {
                             "loss reward":loss_r,
@@ -455,6 +459,8 @@ class main:
 
                         if global_step % 10 == 0:
                             self.save_model(global_step)
+
+                    
 
 if __name__ == "__main__":
     import warnings,logging
