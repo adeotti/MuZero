@@ -14,11 +14,12 @@ from torch.utils.tensorboard import SummaryWriter
 from dataclasses import dataclass,asdict
 from itertools import chain
 from tqdm import tqdm
-
+from copy import deepcopy
+from threading import Thread
 
 @dataclass(frozen=True)
 class main_hypers:
-    device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda" )
+    device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda")
     max_steps: int = 1_000  
     warmup: int = 400 
     env_horizon: int = 300
@@ -54,10 +55,10 @@ class representation_net(nn.Module): # h : state -> s^0
     def __init__(self):
         super().__init__()
         self.input_emb = nn.Parameter(torch.randn(11,64) * 0.1)
-        self.conv1 = nn.LazyConv2d(32,1,1)   # 128
-        self.conv2 = nn.LazyConv2d(32,3,1,1) # 256
-        self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
-        self.conv4 = nn.LazyConv2d(32,3,1,1) # 256
+        self.conv1 = nn.LazyConv2d(256,1,1)   
+        self.conv2 = nn.LazyConv2d(256,3,1,1) 
+        self.conv3 = nn.LazyConv2d(256,3,1,1) 
+        self.conv4 = nn.LazyConv2d(256,3,1,1) 
 
     def forward(self,x):
         x = torch.einsum("nbrc,bo->norc",x,self.input_emb) 
@@ -70,9 +71,9 @@ class representation_net(nn.Module): # h : state -> s^0
 class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.LazyConv2d(32,3,1,1) # 256
-        self.conv2 = nn.LazyConv2d(32,3,1,1) # 256
-        self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
+        self.conv1 = nn.LazyConv2d(256,3,1,1)
+        self.conv2 = nn.LazyConv2d(256,3,1,1) 
+        self.conv3 = nn.LazyConv2d(256,3,1,1) 
         self.l1 = nn.LazyLinear(1024)   
         self.l2 = nn.LazyLinear(512)
         self.l3 = nn.LazyLinear(1)
@@ -80,7 +81,7 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
     def forward(self,x,action): 
         x = F.silu(self.conv1(x))
         x = F.silu(self.conv2(x))
-        latent_state = F.silu(self.conv3(x)) # [1,32,9,9]
+        latent_state = F.silu(self.conv3(x)) # [1,256,9,9]
         n = torch.cat([latent_state.flatten(1),action],dim=1)
         n = F.silu(self.l1(n))
         n = F.silu(self.l2(n))
@@ -90,9 +91,9 @@ class dynamic_net(nn.Module): # g : [s^k-1,a^k] -> [r^k,s^k]
 class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.LazyConv2d(32,3,1,1) # 256
-        self.conv2 = nn.LazyConv2d(32,3,1,1) # 256
-        self.conv3 = nn.LazyConv2d(32,3,1,1) # 256
+        self.conv1 = nn.LazyConv2d(256,3,1,1)
+        self.conv2 = nn.LazyConv2d(256,3,1,1) 
+        self.conv3 = nn.LazyConv2d(256,3,1,1) 
         
         self.l1 = nn.LazyLinear(1024)
         self.l2 = nn.LazyLinear(9*81)
@@ -106,7 +107,6 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         x = F.silu(self.conv1(latent_state))
         x = F.silu(self.conv2(x))
         x = F.silu(self.conv3(x))
-
         x = F.relu(self.l1(x.flatten(1)))
         x = self.l2(x) # 729
         
@@ -230,7 +230,7 @@ class replay_buffer:
     def step(self,n):
         with torch.no_grad():
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(
-                    torch.as_tensor(self.obs.to(self.hypers.device)),
+                    torch.as_tensor(self.obs).to(self.hypers.device),
                     self.idx
                     )
          
@@ -340,9 +340,18 @@ class main:
         self.dynamic_net.apply(init_w) 
         self.prediction_net.apply(init_w)
 
-        # self.representation_net.compile() 
-        # self.dynamic_net.compile() 
-        # self.prediction_net.compile()
+        self.slow_rep_net = deepcopy(self.representation_net).to(self.main_hypers.device)
+        self.slow_dyn_net = deepcopy(self.dynamic_net).to(self.main_hypers.device)
+        self.slow_pred_net = deepcopy(self.prediction_net).to(self.main_hypers.device)
+        
+        if torch.cuda.is_available():
+            self.representation_net.compile() 
+            self.dynamic_net.compile() 
+            self.prediction_net.compile()
+
+            self.slow_rep_net.compile()
+            self.slow_dyn_net.compile()
+            self.slow_pred_net.compile()
 
     def __init__(self):
         self.main_hypers = main_hypers()
@@ -363,6 +372,13 @@ class main:
         ) 
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
         self.l2 = l2_regularization(self.representation_net,self.dynamic_net,self.prediction_net)
+
+        self.buffer_thread = Thread(target=self.buffer_worker,args=())
+
+    def buffer_worker(self):
+        for n in range(self.main_hypers.max_steps):
+            self.replay_buffer.step(n)
+            print(n)
         
     def save_model(self,n):
         path = f"./checkpoint-{n}.pth"
@@ -386,6 +402,8 @@ class main:
     
     def run(self,start=False):
         if start:
+            self.buffer_thread.start()
+            sys.exit()
             mlflow.end_run()
             mlflow.set_experiment("Muzero")
             
