@@ -15,7 +15,8 @@ from dataclasses import dataclass,asdict
 from itertools import chain
 from tqdm import tqdm
 from copy import deepcopy
-from threading import Thread
+from threading import Thread,Lock
+from collection import deque
 
 @dataclass(frozen=True)
 class main_hypers:
@@ -30,7 +31,7 @@ class main_hypers:
 
 @dataclass(frozen=True)
 class mcts_hypers:
-    num_sim: int = 200
+    num_sim: int = 50
     max_depth: int = 250
     epsilon: int = 0.25      # dirichlet
     alpha_value: int = 0.3   
@@ -340,9 +341,9 @@ class main:
         self.dynamic_net.apply(init_w) 
         self.prediction_net.apply(init_w)
 
-        self.slow_rep_net = deepcopy(self.representation_net).to(self.main_hypers.device)
-        self.slow_dyn_net = deepcopy(self.dynamic_net).to(self.main_hypers.device)
-        self.slow_pred_net = deepcopy(self.prediction_net).to(self.main_hypers.device)
+        self.slow_rep_net = deepcopy(self.representation_net).to("cpu")
+        self.slow_dyn_net = deepcopy(self.dynamic_net).to("cpu")
+        self.slow_pred_net = deepcopy(self.prediction_net).to("cpu")
         
         if torch.cuda.is_available():
             self.representation_net.compile() 
@@ -374,10 +375,13 @@ class main:
         self.l2 = l2_regularization(self.representation_net,self.dynamic_net,self.prediction_net)
 
         self.buffer_thread = Thread(target=self.buffer_worker,args=())
+        self.deque = deque(maxsize=1)
 
     def buffer_worker(self):
         for n in range(self.main_hypers.max_steps):
-            self.replay_buffer.step(n)
+            step_reward,mcts_depth = self.replay_buffer.step(n)
+            with Lock():
+                self.deque.append((step_reward,mcts_depth))
         
     def save_model(self,n):
         path = f"./checkpoint-{n}.pth"
@@ -409,9 +413,11 @@ class main:
                 mlflow.log_params((asdict(self.main_hypers) | asdict(self.mcts_hypers)))
 
                 for global_step in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
-                    #step_reward,mcts_depth = self.replay_buffer.step(global_step)
-                
+        
                     if self.replay_buffer.pointer >= self.main_hypers.warmup:
+                        with Lock():
+                            step_reward,mcts_depth = self.deque
+                        
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample() 
                         
                         hidden_rep = self.representation_net(obs[:,0].float())
