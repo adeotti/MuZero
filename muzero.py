@@ -14,16 +14,13 @@ from torch.utils.tensorboard import SummaryWriter
 from dataclasses import dataclass,asdict
 from itertools import chain
 from tqdm import tqdm
-from copy import deepcopy
-from threading import Thread,Lock
-from collection import deque
 
 @dataclass(frozen=True)
 class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda")
-    max_steps: int = 1_000  
-    warmup: int = 400 
-    env_horizon: int = 300
+    max_steps: int = 32*10 
+    warmup: int = 64 
+    env_horizon: int = 50 #300
     batch_size: int = 32
     lr: int = 0.001
     k: int = 5
@@ -32,7 +29,7 @@ class main_hypers:
 @dataclass(frozen=True)
 class mcts_hypers:
     num_sim: int = 50
-    max_depth: int = 250
+    max_depth: int = 55
     epsilon: int = 0.25      # dirichlet
     alpha_value: int = 0.3   
     c1: int = 1.25           # ucb
@@ -250,7 +247,7 @@ class replay_buffer:
                 self.idx = (self.obs == 0).nonzero()
             else: 
                 self.obs = state
-
+            
             self.pointer += 1
             
             if n != 0 and n % self.hypers.batch_size == 0:
@@ -373,15 +370,6 @@ class main:
         ) 
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
         self.l2 = l2_regularization(self.representation_net,self.dynamic_net,self.prediction_net)
-
-        self.buffer_thread = Thread(target=self.buffer_worker,args=())
-        self.deque = deque(maxsize=1)
-
-    def buffer_worker(self):
-        for n in range(self.main_hypers.max_steps):
-            step_reward,mcts_depth = self.replay_buffer.step(n)
-            with Lock():
-                self.deque.append((step_reward,mcts_depth))
         
     def save_model(self,n):
         path = f"./checkpoint-{n}.pth"
@@ -405,19 +393,17 @@ class main:
     
     def run(self,start=False):
         if start:
-            self.buffer_thread.start()
+            
             mlflow.end_run()
             mlflow.set_experiment("Muzero")
             
             with mlflow.start_run() as run:
                 mlflow.log_params((asdict(self.main_hypers) | asdict(self.mcts_hypers)))
-
+                 
                 for global_step in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
-        
-                    if self.replay_buffer.pointer >= self.main_hypers.warmup:
-                        with Lock():
-                            step_reward,mcts_depth = self.deque
-                        
+                    step_reward,mcts_depth = self.replay_buffer.step(global_step)
+                    
+                    if pointer >= self.main_hypers.warmup:
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample() 
                         
                         hidden_rep = self.representation_net(obs[:,0].float())
@@ -445,12 +431,6 @@ class main:
                         total_loss.backward()
                         self.optim.step()
 
-                        # update the slow networks after a batch worth data is collected
-                        if global_steps % self.main_hypers.batch_size == 0:
-                            self.slow_pred_net.load_state_dict(self.prediction_net.state_dict())
-                            self.slow_dyn_net.load_state_dict(self.dynamic_net.state_dict())
-                            self.slow_rep_net.load_state_dict(self.representation_net.state_dict())
-
                         mlflow.log_metrics(
                             {
                             "loss reward":loss_r,
@@ -467,7 +447,6 @@ class main:
                             self.save_model(global_step)
 
                     
-
 if __name__ == "__main__":
     import warnings,logging
     warnings.filterwarnings("ignore")
