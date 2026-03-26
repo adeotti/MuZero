@@ -18,9 +18,9 @@ from tqdm import tqdm
 @dataclass(frozen=True)
 class main_hypers:
     device: str = torch.device("cpu" if not torch.cuda.is_available() else "cuda")
-    max_steps: int = 32*10 
-    warmup: int = 64 
-    env_horizon: int = 50 #300
+    max_steps: int = 20_001 
+    warmup: int = 2_000
+    env_horizon: int = 300
     batch_size: int = 32
     lr: int = 0.001
     k: int = 5
@@ -38,7 +38,7 @@ class mcts_hypers:
 
 
 def env(horizon=None):
-    x = gym.make("sudoku-v1",mode="easy",horizon=horizon)
+    x = gym.make("sudoku-v1",mode="easy",horizon=horizon,render_mode="human")
     return x
 
 def process_obs(x): # -> one hot encoding + mask
@@ -121,7 +121,6 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         policy = policy * cell_probs  # p(action) = p(cell target) * p(cell value | cell target)
         
         value = self.value(x)
-
         return target_cell,policy,value
     
 
@@ -143,7 +142,7 @@ class mcts:
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.cat_action = lambda cell,value : torch.cat([cell,value.to(cell.device)])
 
-    def search(self,observation,idx): # TODO fix cell value and target cell selection
+    def search(self,observation): 
         hidden_state = self.rep_net(process_obs(observation))
         target_cell,policy,value = self.pred_net(hidden_state)
 
@@ -221,7 +220,6 @@ class replay_buffer:
         self.mcts = mcts
         self.hypers = hypers
         self.obs = torch.as_tensor(self.env.reset()[0])
-        self.idx = (self.obs == 0).nonzero()
         self.init_buffer()
         self.pointer = 0
 
@@ -229,9 +227,7 @@ class replay_buffer:
         with torch.no_grad():
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(
                     torch.as_tensor(self.obs).to(self.hypers.device),
-                    self.idx
-                    )
-         
+            )
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
      
@@ -244,7 +240,6 @@ class replay_buffer:
 
             if trunc: 
                 self.obs = torch.as_tensor(self.env.reset()[0])
-                self.idx = (self.obs == 0).nonzero()
             else: 
                 self.obs = state
             
@@ -337,19 +332,11 @@ class main:
         self.representation_net.apply(init_w) 
         self.dynamic_net.apply(init_w) 
         self.prediction_net.apply(init_w)
-
-        self.slow_rep_net = deepcopy(self.representation_net).to("cpu")
-        self.slow_dyn_net = deepcopy(self.dynamic_net).to("cpu")
-        self.slow_pred_net = deepcopy(self.prediction_net).to("cpu")
         
         if torch.cuda.is_available():
             self.representation_net.compile() 
             self.dynamic_net.compile() 
             self.prediction_net.compile()
-
-            self.slow_rep_net.compile()
-            self.slow_dyn_net.compile()
-            self.slow_pred_net.compile()
 
     def __init__(self):
         self.main_hypers = main_hypers()
@@ -365,7 +352,7 @@ class main:
                 lr = self.main_hypers.lr
         )
         self.mcts = mcts(
-                (self.slow_rep_net,self.slow_dyn_net,self.slow_pred_net),
+                (self.representation_net,self.dynamic_net,self.prediction_net),
                 self.mcts_hypers
         ) 
         self.replay_buffer = replay_buffer(self.env,self.mcts,self.main_hypers)
@@ -382,7 +369,6 @@ class main:
         }
 
         torch.save(obj,path)
-        mlflow.log_artifact(path,artifact_path="checkpoints")
 
     def load(self,path):
         obj = torch.load(path)
@@ -392,9 +378,7 @@ class main:
         self.optim.load_state_dict(obj["optim_state"]) 
     
     def run(self,start=False):
-        if start:
-            
-            mlflow.end_run()
+        if start: 
             mlflow.set_experiment("Muzero")
             
             with mlflow.start_run() as run:
@@ -403,7 +387,7 @@ class main:
                 for global_step in tqdm(range(self.main_hypers.max_steps),total=self.main_hypers.max_steps):
                     step_reward,mcts_depth = self.replay_buffer.step(global_step)
                     
-                    if pointer >= self.main_hypers.warmup:
+                    if self.replay_buffer.pointer >= self.main_hypers.warmup:
                         obs,pi,action,reward,mcts_value,value_target = self.replay_buffer.sample() 
                         
                         hidden_rep = self.representation_net(obs[:,0].float())
