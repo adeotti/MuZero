@@ -22,9 +22,10 @@ class main_hypers:
     warmup: int = 2_000
     env_horizon: int = 300
     batch_size: int = 32
-    lr: int = 0.001
+    lr: float = 0.001
     k: int = 5
-    l2_coeff: int = 0.1
+    l2_coeff: float = 0.1
+    gamma: float = 0.99
 
 @dataclass(frozen=True)
 class mcts_hypers:
@@ -259,16 +260,16 @@ class replay_buffer:
             not_done = (1 - self.env_trunc.float()[self.pointer - self.hypers.batch_size : self.pointer])
             mask = not_done.cumprod(0)
             gamma = torch.pow(
-                torch.full((self.hypers.batch_size,),0.2),
+                torch.full((self.hypers.batch_size,),self.hypers.gamma),
                 torch.arange(self.hypers.batch_size)
             ).to(self.hypers.device)
             
-            k_steps = 5 # steps before boostraping
+            k_steps = 5 # steps before bootstrapping
         
             for n in range(self.hypers.batch_size):
                 k_end = min(k_steps,self.hypers.batch_size - n)
-                x =  reward[n:] * gamma[n:] * mask[n:]
-                x += gamma[k_end] * mcts_value[k_end] 
+                x =  reward[n:n+k_end] * (gamma[n:n+k_end]/gamma[n]) * mask[n:n+k_end]
+                x += gamma[n+k_end]/gamma[n] * mcts_value[n+k_end] 
                 value_target[n] = x.sum()
 
             self.value_target[self.pointer - self.hypers.batch_size : self.pointer] = value_target.unsqueeze(-1)
