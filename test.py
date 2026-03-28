@@ -6,7 +6,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from muzero import representation_net,dynamic_net,prediction_net,mcts_hypers,process_obs
+from muzero import (
+    representation_net,
+    dynamic_net,
+    prediction_net,
+    mcts_hypers,
+    process_obs
+)
 
 
 class node:
@@ -27,19 +33,15 @@ class mcts:
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.cat_action = lambda cell,value : torch.cat([cell,value.to(cell.device)])
 
-    def search(self,observation,idx): # TODO fix cell value and target cell selection
+    def search(self,observation):
         hidden_state = self.rep_net(process_obs(observation))
         target_cell,policy,value = self.pred_net(hidden_state)
 
         root = node(0) ; root.state = hidden_state ; depth = 0
 
-        if not root.is_expanded(): # expand root + dirichlet noise on priors
-            alpha = torch.full((9,),self.mcts_hypers.alpha_value)
-            noise = Dirichlet(alpha).sample()
+        if not root.is_expanded():
             for n,p in enumerate(policy.squeeze()):
-                # p'(a) = (1-epsilon) * p'(a) + (epsilon * noise)
-                prior = (1 - self.mcts_hypers.epsilon) * p.item() 
-                prior += self.mcts_hypers.epsilon * noise[n].item() 
+                prior =  p.item()  
                 root.childs[n+1] = node(round(prior,4))
         
         for _ in range(self.mcts_hypers.num_sim): # for n in range simulation
@@ -70,9 +72,11 @@ class mcts:
                 value_n = nod.reward + self.mcts_hypers.gamma * value_n
              
         pi = torch.tensor([v.visit_count for v in root.childs.values()])
-        pi /= pi.sum()
+        temperature = 0.1  # not too small! TODO fix 
+        pi = pi ** (1 / temperature)
+        pi = pi / pi.sum()
     
-        action = torch.multinomial(pi,1).item() + 1 
+        action = torch.argmax(pi).item() + 1
         value = root.childs[action].mean_value
         return pi,action,value.squeeze(),target_cell,depth
     
@@ -102,9 +106,13 @@ def test():
 
     mcts_ = mcts((rep_net,dyn_net,pred_net),mcts_hypers())
 
-    env = gym.make("sudoku-v1",mode="easy",horizon=300,render_mode="human")
-     
-
-test()
+    env = gym.make("sudoku-v0",mode="biased",horizon=300,render_mode="human")
+    obs = env.reset()[0]
+    solution = env.unwrapped.unwrapped.solution
+    for n in range(int(1e5)):
+        mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = mcts_.search(torch.as_tensor(obs)) 
+        action = np.append(target_cell.numpy(),mcts_action)
+        state,reward,done,trunc,info = env.step(action)
+        env.render()
 
 
