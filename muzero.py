@@ -250,7 +250,7 @@ class replay_buffer:
 
         return reward,mcts_depth
     
-    def compute_value_target(self): 
+    def compute_value_target(self): # TODO : Recheck math formula here  
         with torch.no_grad():
             mcts_value = self.mcts_value[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
             value_target = self.value_target[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
