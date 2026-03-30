@@ -100,7 +100,7 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         self.pos = nn.LazyLinear(81)
         self.value = nn.LazyLinear(1)
 
-    def forward(self,latent_state):
+    def forward(self,latent_state,pos_mask):
         B = latent_state.size(0)
 
         x = F.silu(self.conv1(latent_state))
@@ -108,7 +108,9 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         x = F.silu(self.conv3(x))
         x = F.relu(self.l1(x.flatten(1)))
         x = self.l2(x) # 729
-        
+
+        # apply positions mask 
+        o = self.pos(x)
         pre_pos = F.softmax(self.pos(x),-1)
         pre_pos = Categorical(probs=pre_pos)
         pos = pre_pos.sample()
@@ -143,9 +145,9 @@ class mcts:
         self.rep_net,self.dyn_net,self.pred_net = networks
         self.cat_action = lambda cell,value : torch.cat([cell,value.to(cell.device)])
 
-    def search(self,observation): 
+    def search(self,observation,positions_mask):
         hidden_state = self.rep_net(process_obs(observation))
-        target_cell,policy,value = self.pred_net(hidden_state)
+        target_cell,policy,value = self.pred_net(hidden_state,positions_mask)
 
         root = node(0) ; root.state = hidden_state ; depth = 0
 
@@ -173,14 +175,14 @@ class mcts:
             parent = path[-2]
             action = self.cat_action(target_cell,torch.tensor([action]))
             reward_n,state_n = self.dyn_net(parent.state,action.unsqueeze(0))
-            target_cell,policy_n,value_n = self.pred_net(state_n) 
+            target_cell,policy_n,value_n = self.pred_net(state_n,positions_mask) 
             
             path[-1].state = state_n ; path[-1].reward = reward_n
             
             for n, p in enumerate(policy_n.squeeze()): # create childs
                 path[-1].childs[n+1] = node(p.item())        
          
-            for nod in reversed(path): 
+            for nod in reversed(path): # TODO add min max normalization
                 nod.visit_count += 1
                 nod.mean_value += (value_n - nod.mean_value) / nod.visit_count
                 value_n = nod.reward + self.mcts_hypers.gamma * value_n
@@ -220,17 +222,22 @@ class replay_buffer:
         self.env = env
         self.mcts = mcts
         self.hypers = hypers
-        self.obs = torch.as_tensor(self.env.reset()[0])
+
+        obs,info = self.env.reset()
+        self.obs = torch.as_tensor(obs)
+        self.pos_mask = torch.as_tensor(info["positions_mask"]).to(self.hypers.device)
+
         self.init_buffer()
         self.pointer = 0
 
     def step(self,n):
         with torch.no_grad():
             mcts_pi,mcts_action,mcts_value,target_cell,mcts_depth = self.mcts.search(
-                    torch.as_tensor(self.obs).to(self.hypers.device),
+                    torch.as_tensor(self.obs).to(self.hypers.device),self.pos_mask
             )
             action = np.append(target_cell.numpy(),mcts_action)
             state,reward,done,trunc,info = self.env.step(action)
+            self.env.render()
      
             self.mcts_pi[n].copy_(mcts_pi)
             self.env_obs[n].copy_(torch.as_tensor(self.obs))
@@ -240,13 +247,16 @@ class replay_buffer:
             self.env_trunc[n].copy_(trunc)
 
             if trunc: 
-                self.obs = torch.as_tensor(self.env.reset()[0])
+                obs,info = self.env.reset()
+                self.obs = torch.as_tensor(obs)
+                self.pos_mask = torch.as_tensor(info["positions_mask"]).to(self.hypers.device)
             else: 
                 self.obs = state
             
             self.pointer += 1
             
             if n != 0 and n % self.hypers.batch_size == 0:
+                sys.exit()
                 self.compute_value_target()
 
         return reward,mcts_depth
@@ -256,7 +266,7 @@ class replay_buffer:
             mcts_value = self.mcts_value[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
             value_target = self.value_target[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
             reward = self.env_reward[self.pointer - self.hypers.batch_size : self.pointer].squeeze()
-
+        
             not_done = (1 - self.env_trunc.float()[self.pointer - self.hypers.batch_size : self.pointer])
             mask = not_done.cumprod(0)
             gamma = torch.pow(
@@ -270,8 +280,8 @@ class replay_buffer:
                 k_end = min(k_steps,self.hypers.batch_size - n)
                 x =  reward[n:n+k_end] * (gamma[n:n+k_end]/gamma[n]) * mask[n:n+k_end]
                 x += gamma[n+k_end]/gamma[n] * mcts_value[n+k_end] 
-                value_target[n] = x.sum()
-
+                value_target[n] = x.sum()           
+            
             self.value_target[self.pointer - self.hypers.batch_size : self.pointer] = value_target.unsqueeze(-1)
         
     def sample(self):
@@ -319,11 +329,12 @@ class main:
         self.prediction_net = prediction_net().to(self.main_hypers.device)
     
         init_state = torch.ones((1,11,9,9),device=self.main_hypers.device)
+        positions_mask = torch.randint(0,2,(9,9),device=self.main_hypers.device)
         action = torch.as_tensor(self.env.action_space.sample(),device=self.main_hypers.device)
         
         hidden_state = self.representation_net(init_state)
         reward,latent_state = self.dynamic_net(hidden_state,action.unsqueeze(0))
-        _,policy,value = self.prediction_net(latent_state)
+        _,policy,value = self.prediction_net(latent_state,positions_mask)
         
         def init_w(layer):
             if isinstance(layer,(nn.Linear,nn.Conv2d)):
