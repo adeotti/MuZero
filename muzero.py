@@ -110,15 +110,18 @@ class prediction_net(nn.Module): # f : s^k -> [p^k,v^k]
         x = self.l2(x) # 729
 
         # apply positions mask 
-        o = self.pos(x)
-        pre_pos = F.softmax(self.pos(x),-1)
+        pre_pos = self.pos(x)
+        pre_pos.masked_fill_(~pos_mask.flatten(),-float("inf"))
+
+        pre_pos = F.softmax(pre_pos,-1)
         pre_pos = Categorical(probs=pre_pos)
         pos = pre_pos.sample()
         xpos = pos // 9
         ypos = pos % 9 
-        target_cell = torch.cat([xpos,ypos]) 
-        cell_probs = pre_pos.probs[torch.arange(B),pos].unsqueeze(-1) # for joint prob distribution computation later
-    
+        target_cell = torch.cat([xpos,ypos])
+        
+        # joint probability distribution 
+        cell_probs = pre_pos.probs[torch.arange(B),pos].unsqueeze(-1) 
         x_reshaped = x.reshape(B,81,9)
         policy = F.softmax((x_reshaped[torch.arange(B),pos]),-1).squeeze(1) 
         policy = policy * cell_probs  # p(action) = p(cell target) * p(cell value | cell target)
@@ -329,7 +332,7 @@ class main:
         self.prediction_net = prediction_net().to(self.main_hypers.device)
     
         init_state = torch.ones((1,11,9,9),device=self.main_hypers.device)
-        positions_mask = torch.randint(0,2,(9,9),device=self.main_hypers.device)
+        positions_mask = torch.randint(0,2,(9,9),device=self.main_hypers.device,dtype=torch.bool)
         action = torch.as_tensor(self.env.action_space.sample(),device=self.main_hypers.device)
         
         hidden_state = self.representation_net(init_state)
